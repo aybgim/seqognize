@@ -4,23 +4,23 @@ use crate::alignment::{Alignment, AlignmentBuilder};
 use crate::matrix::{Matrix, Idx};
 use crate::{matrix};
 use crate::iterators::{accumulate, set_accumulated};
-use crate::element::{FScore, Element, Op};
+use crate::element::{Score, Element, Op};
 
 pub struct NtAlignmentConfig {
-    pub match_score: FScore,
-    pub mismatch_penalty: FScore,
-    pub subject_gap_penalty: FScore,
-    pub reference_gap_penalty: FScore,
+    pub match_score: Score,
+    pub mismatch_penalty: Score,
+    pub subject_gap_penalty: Score,
+    pub reference_gap_penalty: Score,
 }
 
 impl AlignmentConfig for NtAlignmentConfig {
-    fn get_substitution_score(&self, _pos: (usize, usize), s: u8, r: u8) -> FScore {
+    fn get_substitution_score(&self, _pos: (usize, usize), s: u8, r: u8) -> Score {
         if s == r { self.match_score } else { self.mismatch_penalty }
     }
-    fn get_subject_gap_opening_penalty(&self, _pos: usize) -> FScore {
+    fn get_subject_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.subject_gap_penalty
     }
-    fn get_reference_gap_opening_penalty(&self, _pos: usize) -> FScore {
+    fn get_reference_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.reference_gap_penalty
     }
 }
@@ -92,7 +92,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
     }
 }
 
-fn select(substitution_score: FScore, insertion_score: FScore, deletion_score: FScore) -> Element {
+fn select(substitution_score: Score, insertion_score: Score, deletion_score: Score) -> Element {
     if substitution_score >= insertion_score && substitution_score >= deletion_score {
         substitution(substitution_score)
     } else if insertion_score >= deletion_score {
@@ -102,15 +102,15 @@ fn select(substitution_score: FScore, insertion_score: FScore, deletion_score: F
     }
 }
 
-pub fn insertion(score: FScore) -> Element {
+pub fn insertion(score: Score) -> Element {
     Element { op: Op::INSERT, score }
 }
 
-pub fn deletion(score: FScore) -> Element {
+pub fn deletion(score: Score) -> Element {
     Element { op: Op::DELETE, score }
 }
 
-pub fn substitution(score: FScore) -> Element {
+pub fn substitution(score: Score) -> Element {
     Element { op: Op::MATCH, score }
 }
 
@@ -120,14 +120,14 @@ mod tests {
     use crate::aligner::Aligner;
     use crate::matrix;
     use crate::alignment::Alignment;
-    use crate::element::{FScore, Element};
+    use crate::element::{Score, Element};
 
     const ALIGNER: GlobalNtAligner = GlobalNtAligner {
         config: NtAlignmentConfig {
-            match_score: 1.0,
-            mismatch_penalty: -1.0,
-            subject_gap_penalty: -1.0,
-            reference_gap_penalty: -1.0,
+            match_score: 1,
+            mismatch_penalty: -1,
+            subject_gap_penalty: -1,
+            reference_gap_penalty: -1,
         }
     };
 
@@ -142,7 +142,7 @@ mod tests {
         for i in 1..3 {
             assert_eq!(
                 mtx[(0, i)],
-                deletion(-(i as FScore))
+                deletion(-(i as Score))
             );
         }
     }
@@ -158,7 +158,7 @@ mod tests {
         for i in 1..3 {
             assert_eq!(
                 mtx[(i, 0)],
-                insertion(-(i as FScore))
+                insertion(-(i as Score))
             );
         }
     }
@@ -167,14 +167,14 @@ mod tests {
     fn test_fill_with_match() {
         let mut mtx = matrix::from_elements(
             &[
-                [Element::default(), deletion(-1.0)],
-                [insertion(-1.0), substitution(0.0)]
+                [Element::default(), deletion(-1)],
+                [insertion(-1), substitution(0)]
             ]
         );
         ALIGNER.fill(&mut mtx, "A".as_bytes(), "A".as_bytes());
         assert_eq!(
             mtx[(1, 1)],
-            substitution(1.0)
+            substitution(1)
         );
     }
 
@@ -182,13 +182,13 @@ mod tests {
     fn test_trace_back_snp() {
         let mtx = matrix::from_elements(
             &[
-                [Element::default(), deletion(-1.0)],
-                [insertion(-1.0), substitution(1.0)]
+                [Element::default(), deletion(-1)],
+                [insertion(-1), substitution(1)]
             ]
         );
         assert_eq!(
             ALIGNER.trace_back(&mtx, (1, 1), "A".as_bytes(), "A".as_bytes()),
-            Alignment::from("A", "A", 1.0)
+            Alignment::from("A", "A", 1)
         );
     }
 
@@ -197,12 +197,12 @@ mod tests {
         let mtx = matrix::from_elements(
             &[
                 [Element::default()],
-                [insertion(-1.0)]
+                [insertion(-1)]
             ]
         );
         assert_eq!(
             ALIGNER.trace_back(&mtx, (1, 0), &['A' as u8], &[]),
-            Alignment::from("A", "_", -1.0)
+            Alignment::from("A", "_", -1)
         );
     }
 
@@ -210,12 +210,12 @@ mod tests {
     fn test_trace_back_deletion() {
         let mtx = matrix::from_elements(
             &[
-                [Element::default(), deletion(-1.0)]
+                [Element::default(), deletion(-1)]
             ]
         );
         assert_eq!(
             ALIGNER.trace_back(&mtx, (0, 1), &[], &['A' as u8]),
-            Alignment::from("_", "A", -1.0)
+            Alignment::from("_", "A", -1)
         );
     }
 
@@ -223,7 +223,7 @@ mod tests {
     fn test_match() {
         assert_eq!(
             ALIGNER.align(b"AGCT", b"AGCT"),
-            Alignment::from("AGCT", "AGCT", 4.0)
+            Alignment::from("AGCT", "AGCT", 4)
         )
     }
 
@@ -231,7 +231,7 @@ mod tests {
     fn test_mismatch() {
         assert_eq!(
             ALIGNER.align(b"AGAT", b"AGCT"),
-            Alignment::from("AGAT", "AGCT", 2.0)
+            Alignment::from("AGAT", "AGCT", 2)
         )
     }
 
@@ -239,7 +239,7 @@ mod tests {
     fn test_insertion() {
         assert_eq!(
             ALIGNER.align(b"AGCT", b"AGT"),
-            Alignment::from("AGCT", "AG_T", 2.0)
+            Alignment::from("AGCT", "AG_T", 2)
         )
     }
 
@@ -247,7 +247,7 @@ mod tests {
     fn test_deletion() {
         assert_eq!(
             ALIGNER.align(b"AGT", b"AGCT"),
-            Alignment::from("AG_T", "AGCT", 2.0)
+            Alignment::from("AG_T", "AGCT", 2)
         )
     }
 
@@ -255,7 +255,7 @@ mod tests {
     fn test_double_insertion() {
         assert_eq!(
             ALIGNER.align(b"AGCT", b"AT"),
-            Alignment::from("AGCT", "A__T", 0.0)
+            Alignment::from("AGCT", "A__T", 0)
         )
     }
 
@@ -263,7 +263,7 @@ mod tests {
     fn test_double_deletion() {
         assert_eq!(
             ALIGNER.align(b"AT", b"AGCT"),
-            Alignment::from("A__T", "AGCT", 0.0)
+            Alignment::from("A__T", "AGCT", 0)
         )
     }
 
@@ -271,7 +271,7 @@ mod tests {
     fn test_leading_insertion() {
         assert_eq!(
             ALIGNER.align(b"AGCT", b"GCT"),
-            Alignment::from("AGCT", "_GCT", 2.0)
+            Alignment::from("AGCT", "_GCT", 2)
         )
     }
 
@@ -279,7 +279,7 @@ mod tests {
     fn test_leading_deletion() {
         assert_eq!(
             ALIGNER.align(b"GCT", b"AGCT"),
-            Alignment::from("_GCT", "AGCT", 2.0)
+            Alignment::from("_GCT", "AGCT", 2)
         )
     }
 
@@ -287,7 +287,7 @@ mod tests {
     fn test_trailing_insertion() {
         assert_eq!(
             ALIGNER.align(b"AGCT", b"AGC"),
-            Alignment::from("AGCT", "AGC_", 2.0)
+            Alignment::from("AGCT", "AGC_", 2)
         )
     }
 
@@ -295,7 +295,7 @@ mod tests {
     fn test_trailing_deletion() {
         assert_eq!(
             ALIGNER.align(b"AGC", b"AGCT"),
-            Alignment::from("AGC_", "AGCT", 2.0)
+            Alignment::from("AGC_", "AGCT", 2)
         )
     }
 
@@ -303,7 +303,7 @@ mod tests {
     fn test_two_insertions() {
         assert_eq!(
             ALIGNER.align(b"AGCT", b"GT"),
-            Alignment::from("AGCT", "_G_T", 0.0)
+            Alignment::from("AGCT", "_G_T", 0)
         )
     }
 
@@ -311,7 +311,7 @@ mod tests {
     fn test_two_deletions() {
         assert_eq!(
             ALIGNER.align(b"AC", b"AGCT"),
-            Alignment::from("A_C_", "AGCT", 0.0)
+            Alignment::from("A_C_", "AGCT", 0)
         )
     }
 
@@ -319,7 +319,7 @@ mod tests {
     fn test_empty_subject() {
         assert_eq!(
             ALIGNER.align(b"", b"AGCT"),
-            Alignment::from("____", "AGCT", -4.0)
+            Alignment::from("____", "AGCT", -4)
         )
     }
 
@@ -327,7 +327,7 @@ mod tests {
     fn test_empty_reference() {
         assert_eq!(
             ALIGNER.align(b"AGCT", b""),
-            Alignment::from("AGCT", "____", -4.0)
+            Alignment::from("AGCT", "____", -4)
         )
     }
 }

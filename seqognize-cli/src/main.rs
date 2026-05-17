@@ -1,76 +1,56 @@
-#![allow(dead_code)]
-
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use seqognize::aligner::Aligner;
-use clap::{App, Arg, ArgMatches};
-use std::str::FromStr;
-use std::fmt::Debug;
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Reference sequence
+    #[arg(short = 'r', long = "ref")]
+    reference: String,
+
+    /// Subject sequence
+    #[arg(short = 's', long = "sub")]
+    subject: String,
+
+    /// Match score
+    #[arg(short = 'm', long = "match", default_value_t = 1)]
+    match_score: i32,
+
+    /// Mismatch penalty
+    #[arg(short = 'x', long = "mismatch", default_value_t = -1)]
+    mismatch_penalty: i32,
+
+    /// Subject gap opening
+    #[arg(long = "sg", default_value_t = -1)]
+    subject_gap: i32,
+
+    /// Reference gap opening
+    #[arg(long = "rg", default_value_t = -1)]
+    reference_gap: i32,
+
+    /// Vertical output
+    #[arg(long)]
+    vertical: bool,
+}
 
 fn main() {
-    let matches = App::new("Seqognize")
-        .version("1.0")
-        .author("Albert Gevorgyan. <ablertus@yahoo.com>")
-        .about("Sequence analysis tool.")
-        .arg(Arg::with_name("reference")
-            .short("r")
-            .long("ref")
-            .help("Reference sequence")
-            .required(true)
-            .takes_value(true))
-        .arg(Arg::with_name("subject")
-            .short("s")
-            .long("sub")
-            .help("Subject sequence")
-            .required(true)
-            .takes_value(true))
-        .arg(Arg::with_name("match")
-            .short("m")
-            .long("match")
-            .help("Match score")
-            .takes_value(true))
-        .arg(Arg::with_name("mismatch")
-            .short("x")
-            .long("mismatch")
-            .help("Mismatch penalty")
-            .takes_value(true))
-        .arg(Arg::with_name("subject_gap")
-            // .short("sg")
-            .long("sg")
-            .help("Subject gap opening")
-            .takes_value(true))
-        .arg(Arg::with_name("reference_gap")
-            // .short("rg")
-            .long("rg")
-            .help("Reference gap opening")
-            .takes_value(true))
-        .arg(Arg::with_name("vertical")
-            .long("vertical")
-            .help("Vertical output")
-            .takes_value(false))
-        .get_matches();
-
-    let reference = matches.value_of("reference").unwrap().as_bytes();
-    let subject = matches.value_of("subject").unwrap().as_bytes();
+    let args = Args::parse();
 
     let aligner: GlobalNtAligner = GlobalNtAligner {
         config: NtAlignmentConfig {
-            match_score: arg(&matches, "match", 1.0),
-            mismatch_penalty: arg(&matches, "mismatch", -1.0),
-            subject_gap_penalty: arg(&matches, "subject_gap", -1.0),
-            reference_gap_penalty: arg(&matches, "reference_gap", -1.0),
+            match_score: args.match_score,
+            mismatch_penalty: args.mismatch_penalty,
+            subject_gap_penalty: args.subject_gap,
+            reference_gap_penalty: args.reference_gap,
         }
     };
 
-    let alignment = aligner.align(&subject, &reference);
+    let alignment = aligner.align(args.subject.as_bytes(), args.reference.as_bytes());
     println!("Score: {:?}", alignment.score);
-    if matches.is_present("vertical") {
+    if args.vertical {
         alignment.print_vertical();
     } else {
         alignment.print_horizontal();
     }
-}
-
-fn arg<T: FromStr + Debug>(matches: &ArgMatches, argname: &str, default: T) -> T
-    where <T as std::str::FromStr>::Err: std::fmt::Debug {
-    matches.value_of(argname).map(|s| s.parse().unwrap()).unwrap_or(default)
 }

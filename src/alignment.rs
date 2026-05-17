@@ -1,4 +1,4 @@
-use crate::element::{FScore, Op};
+use crate::element::{Score, Op};
 use crate::matrix::Idx;
 use core::iter;
 
@@ -22,12 +22,12 @@ impl Anchor {
 
 #[derive(Debug, PartialEq)]
 pub struct Alignment {
-    pub score: FScore,
+    pub score: Score,
     pub anchors: Vec<Anchor>,
 }
 
 impl Alignment {
-    pub fn from(subject: &str, reference: &str, score: FScore) -> Self {
+    pub fn from(subject: &str, reference: &str, score: Score) -> Self {
         Alignment {
             score,
             anchors: to_anchors(subject, reference),
@@ -92,7 +92,7 @@ impl<'a> AlignmentBuilder<'a> {
         self.anchors.push(anchor);
     }
 
-    pub fn build(self, score: FScore) -> Alignment {
+    pub fn build(self, score: Score) -> Alignment {
         Alignment {
             score,
             anchors: self.anchors,

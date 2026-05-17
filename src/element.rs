@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-pub type FScore = f64;
+pub type Score = i32;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Op {
@@ -13,20 +13,20 @@ pub enum Op {
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Element {
     pub op: Op,
-    pub score: FScore,
+    pub score: Score,
 }
 
-impl Add<FScore> for Element {
-    type Output = FScore;
+impl Add<Score> for Element {
+    type Output = Score;
 
-    fn add(self, rhs: FScore) -> Self::Output {
+    fn add(self, rhs: Score) -> Self::Output {
         self.score + rhs
     }
 }
 
 impl Default for Element {
     fn default() -> Self {
-        Element { op: Op::START, score: 0.0 }
+        Element { op: Op::START, score: 0 }
     }
 }
 

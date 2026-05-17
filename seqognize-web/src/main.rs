@@ -5,7 +5,7 @@ use yew::prelude::*;
 use yew::services::{DialogService};
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use seqognize::aligner::Aligner;
-use std::num::ParseFloatError;
+use std::num::ParseIntError;
 
 struct Model {
     reference: String,
@@ -147,8 +147,8 @@ impl Parser {
         Parser { dialog: DialogService::new() }
     }
 
-    fn parse(&mut self, value: &str) -> Result<f64, ParseFloatError> {
-        match value.parse::<f64>() {
+    fn parse(&mut self, value: &str) -> Result<i32, ParseIntError> {
+        match value.parse::<i32>() {
             Ok(number) => Ok(number),
             Err(e) => {
                 let msg = format!("Invalid number: {}", value);
@@ -164,16 +164,16 @@ fn main() {
 }
 
 impl Model {
-    fn config(&mut self) -> Result<NtAlignmentConfig, ParseFloatError> {
+    fn config(&mut self) -> Result<NtAlignmentConfig, ParseIntError> {
         Ok(NtAlignmentConfig {
             match_score: self.parser.parse(&self.match_score)?,
             mismatch_penalty: self.parser.parse(&self.mismatch_score)?,
-            subject_gap_penalty: -1.0,
-            reference_gap_penalty: -1.0,
+            subject_gap_penalty: -1,
+            reference_gap_penalty: -1,
         })
     }
 
-    fn align(&mut self) -> Result<AlignmentResult, ParseFloatError> {
+    fn align(&mut self) -> Result<AlignmentResult, ParseIntError> {
         let config = self.config()?;
         let aligner = GlobalNtAligner { config };
         let alignment = aligner.align(
@@ -188,11 +188,11 @@ impl Model {
 
 struct AlignmentResult {
     alignment: String,
-    score: Option<f64>,
+    score: Option<i32>,
 }
 
 impl AlignmentResult {
-    fn of(alignment: String, score: f64) -> Self {
+    fn of(alignment: String, score: i32) -> Self {
         AlignmentResult { alignment, score: Some(score) }
     }
 

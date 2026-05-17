@@ -8,10 +8,10 @@ use criterion::Criterion;
 fn nt_alignment_benchmark(c: &mut Criterion) {
     let aligner: GlobalNtAligner = GlobalNtAligner {
         config: NtAlignmentConfig {
-            match_score: 1.0,
-            mismatch_penalty: -1.0,
-            subject_gap_penalty: -1.0,
-            reference_gap_penalty: -1.0,
+            match_score: 1,
+            mismatch_penalty: -1,
+            subject_gap_penalty: -1,
+            reference_gap_penalty: -1,
         }
     };
     c.bench_function("NT alignment", |b| b.iter(|| aligner.align(b"ACGTACT", b"ACTACGT")));

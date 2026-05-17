@@ -3,7 +3,6 @@ use crate::aligner::{Aligner};
 use crate::alignment::{Alignment, AlignmentBuilder};
 use crate::matrix::{Matrix, Idx};
 use crate::{matrix};
-use crate::iterators::{accumulate, set_accumulated};
 use crate::element::{Score, Element, Op};
 
 pub struct NtAlignmentConfig {
@@ -37,68 +36,74 @@ impl From<NtAlignmentConfig> for GlobalNtAligner {
 
 impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
     fn fill_top_row(&self, mtx: &mut Matrix) {
-        set_accumulated(
-            accumulate(
-                mtx.cols(),
-                |n| self.config.get_subject_gap_opening_penalty(n),
-            ),
-            mtx.row_mut(0).iter_mut(),
-            |s| deletion(s),
-        )
+        let ncols = mtx.ncols();
+        let mut acc = 0;
+        mtx.scores[0] = 0;
+        mtx.ops[0] = Op::START;
+        for col in 1..ncols {
+            acc += self.config.get_subject_gap_opening_penalty(col - 1);
+            mtx.scores[col] = acc;
+            mtx.ops[col] = Op::DELETE;
+        }
     }
 
     fn fill_left_column(&self, mtx: &mut Matrix) {
-        set_accumulated(
-            accumulate(
-                mtx.rows(),
-                |n| self.config.get_reference_gap_opening_penalty(n),
-            ),
-            mtx.column_mut(0).iter_mut(),
-            |s| insertion(s),
-        );
+        let nrows = mtx.nrows();
+        let ncols = mtx.ncols();
+        let mut acc = 0;
+        mtx.scores[0] = 0;
+        mtx.ops[0] = Op::START;
+        for row in 1..nrows {
+            acc += self.config.get_reference_gap_opening_penalty(row - 1);
+            mtx.scores[row * ncols] = acc;
+            mtx.ops[row * ncols] = Op::INSERT;
+        }
     }
 
     fn fill(&self, mtx: &mut Matrix, subject: &[u8], reference: &[u8]) {
-        for row in 1..mtx.rows() {
+        let ncols = mtx.ncols();
+        for row in 1..mtx.nrows() {
             let s = subject[row - 1];
-            for col in 1..mtx.cols() {
+            let row_offset = row * ncols;
+            let prev_row_offset = (row - 1) * ncols;
+            for col in 1..ncols {
                 let r = reference[col - 1];
-                mtx[(row, col)] = select(
-                    mtx[(row - 1, col - 1)] +
-                        self.config.get_substitution_score((row, col), s, r),
-                    mtx[(row - 1, col)] +
-                        self.config.get_reference_gap_opening_penalty(row),
-                    mtx[(row, col - 1)] +
-                        self.config.get_subject_gap_opening_penalty(col),
-                )
+                
+                let score_match = mtx.scores[prev_row_offset + col - 1] + 
+                    self.config.get_substitution_score((row, col), s, r);
+                let score_insert = mtx.scores[prev_row_offset + col] + 
+                    self.config.get_reference_gap_opening_penalty(row);
+                let score_delete = mtx.scores[row_offset + col - 1] + 
+                    self.config.get_subject_gap_opening_penalty(col);
+
+                let (score, op) = if score_match >= score_insert && score_match >= score_delete {
+                    (score_match, Op::MATCH)
+                } else if score_insert >= score_delete {
+                    (score_insert, Op::INSERT)
+                } else {
+                    (score_delete, Op::DELETE)
+                };
+
+                mtx.scores[row_offset + col] = score;
+                mtx.ops[row_offset + col] = op;
             }
         }
     }
 
     fn end_idx(&self, mtx: &Matrix) -> Idx {
-        (mtx.rows() - 1, mtx.cols() - 1)
+        (mtx.nrows() - 1, mtx.ncols() - 1)
     }
 
     fn trace_back(&self, mtx: &Matrix, end_index: Idx, subject: &[u8], reference: &[u8]) -> Alignment {
         let mut builder = AlignmentBuilder::new(subject, reference);
         let mut cursor = end_index;
         while cursor != (0, 0) {
-            let element = mtx[cursor];
+            let element = mtx.get(cursor);
             builder.take(element.op, cursor);
             cursor = matrix::move_back(&element, cursor);
         }
         builder.take(Op::START, cursor);
-        builder.build(mtx[end_index].score)
-    }
-}
-
-fn select(substitution_score: Score, insertion_score: Score, deletion_score: Score) -> Element {
-    if substitution_score >= insertion_score && substitution_score >= deletion_score {
-        substitution(substitution_score)
-    } else if insertion_score >= deletion_score {
-        insertion(insertion_score)
-    } else {
-        deletion(deletion_score)
+        builder.build(mtx.get(end_index).score)
     }
 }
 
@@ -136,12 +141,12 @@ mod tests {
         let mut mtx = matrix::of(2, 3);
         ALIGNER.fill_top_row(&mut mtx);
         assert_eq!(
-            *mtx.get((0, 0)).unwrap(),
+            mtx.get((0, 0)),
             Element::default()
         );
         for i in 1..3 {
             assert_eq!(
-                mtx[(0, i)],
+                mtx.get((0, i)),
                 deletion(-(i as Score))
             );
         }
@@ -152,12 +157,12 @@ mod tests {
         let mut mtx = matrix::of(3, 2);
         ALIGNER.fill_left_column(&mut mtx);
         assert_eq!(
-            *mtx.get((0, 0)).unwrap(),
+            mtx.get((0, 0)),
             Element::default()
         );
         for i in 1..3 {
             assert_eq!(
-                mtx[(i, 0)],
+                mtx.get((i, 0)),
                 insertion(-(i as Score))
             );
         }
@@ -166,14 +171,14 @@ mod tests {
     #[test]
     fn test_fill_with_match() {
         let mut mtx = matrix::from_elements(
-            &[
+            [
                 [Element::default(), deletion(-1)],
                 [insertion(-1), substitution(0)]
             ]
         );
         ALIGNER.fill(&mut mtx, "A".as_bytes(), "A".as_bytes());
         assert_eq!(
-            mtx[(1, 1)],
+            mtx.get((1, 1)),
             substitution(1)
         );
     }
@@ -181,7 +186,7 @@ mod tests {
     #[test]
     fn test_trace_back_snp() {
         let mtx = matrix::from_elements(
-            &[
+            [
                 [Element::default(), deletion(-1)],
                 [insertion(-1), substitution(1)]
             ]
@@ -195,7 +200,7 @@ mod tests {
     #[test]
     fn test_trace_back_insertion() {
         let mtx = matrix::from_elements(
-            &[
+            [
                 [Element::default()],
                 [insertion(-1)]
             ]
@@ -209,7 +214,7 @@ mod tests {
     #[test]
     fn test_trace_back_deletion() {
         let mtx = matrix::from_elements(
-            &[
+            [
                 [Element::default(), deletion(-1)]
             ]
         );
@@ -331,4 +336,3 @@ mod tests {
         )
     }
 }
-

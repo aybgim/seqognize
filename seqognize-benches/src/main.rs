@@ -10,35 +10,46 @@
 //! cargo run -p seqognize-benches --bin synth
 //! ```
 
-use rand::{Rng, SeedableRng};
+mod tests;
+
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use seqognize::aligner::Aligner;
+use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use std::fs::File;
-use std::io::{Write, BufWriter};
+use std::io::BufWriter;
+use crate::tests::{TestCase, TestSuite};
 
 const BASES: &[u8] = b"ACGT";
 const SEED: u64 = 42;
 
+
+const NUM_TESTS: usize = 100;
+
 fn main() -> std::io::Result<()> {
     let mut rng = StdRng::seed_from_u64(SEED);
-    let file = File::create("seqognize-benches/synth.fasta")?;
-    let mut writer = BufWriter::new(file);
+
+    let aligner: GlobalNtAligner = GlobalNtAligner {
+        config: NtAlignmentConfig {
+            match_score: 1,
+            mismatch_penalty: -1,
+            subject_gap_penalty: -1,
+            reference_gap_penalty: -1,
+        },
+    };
 
     // Generate reference sequence (1000 bp)
-    let reference: Vec<u8> = (0..1000)
-        .map(|_| BASES[rng.gen_range(0..4)])
-        .collect();
+    let reference: Vec<u8> = (0..1000).map(|_| BASES[rng.gen_range(0..4)]).collect();
 
-    writeln!(writer, ">reference:1000")?;
-    writer.write_all(&reference)?;
-    writeln!(writer)?;
+    let mut test_cases: Vec<TestCase> = Vec::with_capacity(NUM_TESTS);
 
     // Generate 100 mutated sequences
-    for i in 1..=100 {
+    for _ in 0..NUM_TESTS {
         let length = rng.gen_range(10..=5000);
-        
+
         // mutation_rate_inv varies from 10 to 1000, so mutation rate is 1/10 to 1/1000
         let mutation_rate_inv = rng.gen_range(10..=1000);
-        
+
         let mut sequence = Vec::with_capacity(length);
         for j in 0..length {
             // Pick base from reference if within bounds, otherwise random
@@ -61,10 +72,24 @@ fn main() -> std::io::Result<()> {
             }
         }
 
-        writeln!(writer, ">{i}|{length}|1/{mutation_rate_inv}")?;
-        writer.write_all(&sequence)?;
-        writeln!(writer)?;
+        let alignment = aligner.align(&sequence, &reference);
+        let aligned_sequences = alignment.aligned_sequences();
+        test_cases.push(TestCase {
+            length,
+            mutation_rate: mutation_rate_inv,
+            sequence: String::from_utf8(sequence).expect("Invalid reference"),
+            score: alignment.score,
+            aligned_sequences,
+        });
     }
+
+    let file = File::create("seqognize-benches/synth.json")?;
+    let writer = BufWriter::new(file);
+    let test_suite = TestSuite {
+        reference: String::from_utf8(reference).expect("Invalid reference"),
+        test_cases,
+    };
+    serde_json::to_writer_pretty(writer, &test_suite)?;
 
     println!("Generated seqognize-benches/synth.fasta with 1 reference and 100 mutants.");
     Ok(())

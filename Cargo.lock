@@ -874,6 +874,8 @@ dependencies = [
  "criterion",
  "rand",
  "seqognize",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

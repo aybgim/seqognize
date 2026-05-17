@@ -91,6 +91,6 @@ fn main() -> std::io::Result<()> {
     };
     serde_json::to_writer_pretty(writer, &test_suite)?;
 
-    println!("Generated seqognize-benches/synth.fasta with 1 reference and 100 mutants.");
+    println!("Generated seqognize-benches/synth.json with 1 reference and 100 mutants.");
     Ok(())
 }

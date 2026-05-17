@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
 use seqognize::element::Score;
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::BufReader;
 
 #[derive(Serialize, Deserialize)]
 pub struct TestCase {
@@ -16,13 +18,21 @@ pub struct TestSuite {
     pub test_cases: Vec<TestCase>,
 }
 
+
+pub fn read_tests() -> TestSuite {
+    let path = format!("{}/synth.json", env!("CARGO_MANIFEST_DIR"));
+    let file = File::open(path).expect("Failed to open synth.json");
+    let reader = BufReader::new(file);
+
+    let test_suite: TestSuite = serde_json::from_reader(reader).expect("Failed to parse synth.json");
+    test_suite
+}
+
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-    use std::io::BufReader;
     use seqognize::aligner::Aligner;
     use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
-    use crate::tests::TestSuite;
+    use crate::tests::read_tests;
 
     #[test]
     fn test_synth() {
@@ -35,11 +45,7 @@ mod tests {
             }
         };
 
-        let path = format!("{}/synth.json", env!("CARGO_MANIFEST_DIR"));
-        let file = File::open(path).expect("Failed to open synth.json");
-        let reader = BufReader::new(file);
-
-        let test_suite: TestSuite = serde_json::from_reader(reader).expect("Failed to parse synth.json");
+        let test_suite = read_tests();
         let reference = test_suite.reference.as_bytes();
 
         test_suite.test_cases.iter().for_each(|test| {

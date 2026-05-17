@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use seqognize::alignment::Alignment;
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use seqognize::aligner::Aligner;
 use clap::{App, Arg, ArgMatches};

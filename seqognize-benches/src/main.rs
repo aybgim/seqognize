@@ -3,7 +3,7 @@
 //! This tool generates a 1000 bp reference sequence and 100 randomly mutated
 //! sequences with varying lengths (10-5000 bp) and mutation rates (1/10 to 1/1000).
 //!
-//! The output is written in FASTA format to `seqognize-benches/synth.fasta`.
+//! The output is written in json format to `seqognize-benches/synth.json`.
 //!
 //! # Usage
 //! ```powershell

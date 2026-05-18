@@ -36,16 +36,17 @@ mod tests {
 
     #[test]
     fn test_synth() {
-        let aligner: GlobalNtAligner = GlobalNtAligner {
-            config: NtAlignmentConfig::new(1, -1, -1, -1),
-        };
-
         let test_suite = read_tests();
         let reference = test_suite.reference.as_bytes();
 
+        let aligner: GlobalNtAligner = GlobalNtAligner::new(
+            NtAlignmentConfig::new(1, -1, -1, -1),
+            reference.to_vec()
+        );
+
         test_suite.test_cases.iter().for_each(|test| {
             let sequence = test.sequence.as_bytes();
-            let alignment = aligner.align(&sequence, &reference).expect("Alignment failed during test");
+            let alignment = aligner.align(&sequence).expect("Alignment failed during test");
             assert_eq!(test.score, alignment.score);
             assert_eq!(test.aligned_sequences, alignment.aligned_sequences());
         });

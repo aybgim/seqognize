@@ -52,16 +52,17 @@ fn main() {
     let reference = matches.value_of("reference").unwrap().as_bytes();
     let subject = matches.value_of("subject").unwrap().as_bytes();
 
-    let aligner: GlobalNtAligner = GlobalNtAligner {
-        config: NtAlignmentConfig::new(
+    let aligner: GlobalNtAligner = GlobalNtAligner::new(
+        NtAlignmentConfig::new(
             arg(&matches, "match", 1i16),
             arg(&matches, "mismatch", -1i16),
             arg(&matches, "subject_gap", -1i16),
             arg(&matches, "reference_gap", -1i16),
-        )
-    };
+        ),
+        reference.to_vec()
+    );
 
-    let alignment = aligner.align(&subject, &reference).expect("Alignment failed");
+    let alignment = aligner.align(&subject).expect("Alignment failed");
     println!("Score: {:?}", alignment.score);
     if matches.is_present("vertical") {
         alignment.print_vertical();

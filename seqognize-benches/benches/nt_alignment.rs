@@ -14,25 +14,27 @@ use seqognize_benches::tests::read_tests;
 /// Note: `sample_size` is set to 10 because the total computational work per iteration
 /// (100 alignments) is large and would otherwise exceed default timing limits.
 fn nt_alignment_benchmark(c: &mut Criterion) {
-
-    let aligner: GlobalNtAligner = GlobalNtAligner {
-        config: NtAlignmentConfig::new(1, -1, -1, -1),
-    };
-
     let test_suite = read_tests();
     let reference = test_suite.reference.as_bytes();
     let mutants: Vec<&[u8]> = test_suite.test_cases.iter()
         .map(|test| test.sequence.as_bytes())
         .collect();
 
+    let aligner: GlobalNtAligner = GlobalNtAligner::new(
+        NtAlignmentConfig::new(1, -1, -1, -1),
+        reference.to_vec()
+    );
+
     let mut group = c.benchmark_group("Alignment");
+    group.sample_size(10);
     group.bench_function("NT alignment batch (100 sequences)", |b| {
         b.iter(|| {
             for mutant in &mutants {
-                let _ = aligner.align(mutant, &reference).unwrap();
+                let _ = aligner.align(mutant).unwrap();
             }
         })
     });
+    group.finish();
 }
 
 criterion_group!(nt_alignment, nt_alignment_benchmark);

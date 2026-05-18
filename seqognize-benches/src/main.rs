@@ -10,15 +10,13 @@
 //! cargo run -p seqognize-benches --bin synth
 //! ```
 
-mod tests;
-
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use seqognize::aligner::Aligner;
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use std::fs::File;
 use std::io::BufWriter;
-use crate::tests::{TestCase, TestSuite};
+use seqognize_benches::tests::{TestCase, TestSuite};
 
 const BASES: &[u8] = b"ACGT";
 const SEED: u64 = 42;
@@ -29,12 +27,13 @@ const NUM_TESTS: usize = 100;
 fn main() -> std::io::Result<()> {
     let mut rng = StdRng::seed_from_u64(SEED);
 
-    let aligner: GlobalNtAligner = GlobalNtAligner {
-        config: NtAlignmentConfig::new(1, -1, -1, -1),
-    };
-
     // Generate reference sequence (1000 bp)
     let reference: Vec<u8> = (0..1000).map(|_| BASES[rng.gen_range(0..4)]).collect();
+
+    let aligner: GlobalNtAligner = GlobalNtAligner::new(
+        NtAlignmentConfig::new(1, -1, -1, -1),
+        reference.clone()
+    );
 
     let mut test_cases: Vec<TestCase> = Vec::with_capacity(NUM_TESTS);
 
@@ -67,7 +66,7 @@ fn main() -> std::io::Result<()> {
             }
         }
 
-        let alignment = aligner.align(&sequence, &reference).expect("Alignment failed during synthesis");
+        let alignment = aligner.align(&sequence).expect("Alignment failed during synthesis");
         let aligned_sequences = alignment.aligned_sequences();
         test_cases.push(TestCase {
             length,

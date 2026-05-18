@@ -176,10 +176,9 @@ impl Model {
 
     fn align(&mut self) -> Result<AlignmentResult, ParseIntError> {
         let config = self.config()?;
-        let aligner = GlobalNtAligner { config };
+        let aligner = GlobalNtAligner::new(config, self.reference.as_bytes().to_vec());
         let alignment = match aligner.align(
             &self.subject.as_bytes(),
-            &self.reference.as_bytes(),
         ) {
             Ok(a) => a,
             Err(_) => return Ok(AlignmentResult::empty()),

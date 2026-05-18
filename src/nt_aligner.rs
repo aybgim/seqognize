@@ -52,16 +52,42 @@ impl AlignmentConfig for NtAlignmentConfig {
 }
 
 pub struct GlobalNtAligner {
-    pub config: NtAlignmentConfig
+    pub config: NtAlignmentConfig,
+    pub reference: Vec<u8>,
+    pub top_row_scores: Vec<Score>,
+    pub top_row_ops: Vec<Op>,
 }
 
-impl From<NtAlignmentConfig> for GlobalNtAligner {
-    fn from(config: NtAlignmentConfig) -> Self {
-        GlobalNtAligner { config }
+impl GlobalNtAligner {
+    pub fn new(config: NtAlignmentConfig, reference: Vec<u8>) -> Self {
+        let ncols = reference.len() + 1;
+        let mut top_row_scores = vec![0; ncols];
+        let mut top_row_ops = vec![Op::START; ncols];
+        
+        // Only pre-calculate if within safe limits to avoid i16 overflow
+        if reference.len() <= config.get_max_reference_size() {
+            let mut acc = 0;
+            for col in 1..ncols {
+                acc += config.get_subject_gap_opening_penalty(col - 1);
+                top_row_scores[col] = acc;
+                top_row_ops[col] = Op::DELETE;
+            }
+        }
+
+        GlobalNtAligner {
+            config,
+            reference,
+            top_row_scores,
+            top_row_ops,
+        }
     }
 }
 
 impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
+    fn reference(&self) -> &[u8] {
+        &self.reference
+    }
+
     fn check_sizes(&self, subject_len: usize, reference_len: usize) -> Result<(), AlignmentError> {
         if subject_len > self.config.get_max_subject_size() || reference_len > self.config.get_max_reference_size() {
             return Err(AlignmentError::SequenceTooLong);
@@ -71,44 +97,38 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
 
     fn fill_top_row(&self, mtx: &mut Matrix) {
         let ncols = mtx.ncols();
-        let mut acc = 0;
-        mtx.scores[0] = 0;
-        mtx.ops[0] = Op::START;
-        for col in 1..ncols {
-            acc += self.config.get_subject_gap_opening_penalty(col - 1);
-            mtx.scores[col] = acc;
-            mtx.ops[col] = Op::DELETE;
-        }
+        mtx.scores[0].copy_from_slice(&self.top_row_scores);
+        mtx.ops[0..ncols].copy_from_slice(&self.top_row_ops);
     }
 
-    fn fill_left_column(&self, mtx: &mut Matrix) {
-        let nrows = mtx.nrows();
-        let ncols = mtx.ncols();
-        let mut acc = 0;
-        mtx.scores[0] = 0;
-        mtx.ops[0] = Op::START;
-        for row in 1..nrows {
-            acc += self.config.get_reference_gap_opening_penalty(row - 1);
-            mtx.scores[row * ncols] = acc;
-            mtx.ops[row * ncols] = Op::INSERT;
-        }
+    fn fill_left_column(&self, _mtx: &mut Matrix) {
+        // In row recycling, we update column 0 of EVERY row during the fill loop.
+        // But for row 0 initialization, we already did it in fill_top_row.
     }
 
     fn fill(&self, mtx: &mut Matrix, subject: &[u8], reference: &[u8]) {
+        let nrows = mtx.nrows();
         let ncols = mtx.ncols();
-        for row in 1..mtx.nrows() {
+
+        for row in 1..nrows {
+            let curr = row % 2;
+            let prev = (row - 1) % 2;
             let s = subject[row - 1];
-            let row_offset = row * ncols;
-            let prev_row_offset = (row - 1) * ncols;
+
+            // Initialize first column of the current row
+            let acc_ref = mtx.scores[prev][0] + self.config.get_reference_gap_opening_penalty(row - 1);
+            mtx.scores[curr][0] = acc_ref;
+            mtx.ops[row * ncols] = Op::INSERT;
+
             for col in 1..ncols {
                 let r = reference[col - 1];
                 
-                let score_match = mtx.scores[prev_row_offset + col - 1] +
+                let score_match = mtx.scores[prev][col - 1] +
                     self.config.get_substitution_score((row, col), s, r);
-                let score_insert = mtx.scores[prev_row_offset + col] +
-                    self.config.get_reference_gap_opening_penalty(row);
-                let score_delete = mtx.scores[row_offset + col - 1] +
-                    self.config.get_subject_gap_opening_penalty(col);
+                let score_insert = mtx.scores[prev][col] +
+                    self.config.get_reference_gap_opening_penalty(row - 1);
+                let score_delete = mtx.scores[curr][col - 1] +
+                    self.config.get_subject_gap_opening_penalty(col - 1);
 
                 let (score, op) = if score_match >= score_insert && score_match >= score_delete {
                     (score_match, Op::MATCH)
@@ -118,8 +138,8 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                     (score_delete, Op::DELETE)
                 };
 
-                mtx.scores[row_offset + col] = score;
-                mtx.ops[row_offset + col] = op;
+                mtx.scores[curr][col] = score;
+                mtx.ops[row * ncols + col] = op;
             }
         }
     }
@@ -137,7 +157,8 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             cursor = matrix::move_back(&element, cursor);
         }
         builder.take(Op::START, cursor);
-        builder.build(mtx.get(end_index).score)
+        // build() expects the final score of the entire alignment
+        builder.build(mtx.scores[end_index.0 % 2][end_index.1])
     }
 }
 
@@ -162,21 +183,17 @@ mod tests {
     use crate::alignment::Alignment;
     use crate::element::{Score, Element};
 
-    const ALIGNER: GlobalNtAligner = GlobalNtAligner {
-        config: NtAlignmentConfig {
-            match_score: 1,
-            mismatch_penalty: -1,
-            subject_gap_penalty: -1,
-            reference_gap_penalty: -1,
-            max_reference_size: 16383,
-            max_subject_size: 16383,
-        }
-    };
+    fn aligner(reference: &[u8]) -> GlobalNtAligner {
+        GlobalNtAligner::new(
+            NtAlignmentConfig::new(1, -1, -1, -1),
+            reference.to_vec()
+        )
+    }
 
     #[test]
     fn test_fill_top_row() {
         let mut mtx = matrix::of(2, 3);
-        ALIGNER.fill_top_row(&mut mtx);
+        aligner(b"AA").fill_top_row(&mut mtx);
         assert_eq!(
             mtx.get((0, 0)),
             Element::default()
@@ -190,22 +207,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fill_left_column() {
-        let mut mtx = matrix::of(3, 2);
-        ALIGNER.fill_left_column(&mut mtx);
-        assert_eq!(
-            mtx.get((0, 0)),
-            Element::default()
-        );
-        for i in 1..3 {
-            assert_eq!(
-                mtx.get((i, 0)),
-                insertion(-(i as Score))
-            );
-        }
-    }
-
-    #[test]
     fn test_fill_with_match() {
         let mut mtx = matrix::from_elements(
             [
@@ -213,7 +214,7 @@ mod tests {
                 [insertion(-1), substitution(0)]
             ]
         );
-        ALIGNER.fill(&mut mtx, "A".as_bytes(), "A".as_bytes());
+        aligner(b"A").fill(&mut mtx, b"A", b"A");
         assert_eq!(
             mtx.get((1, 1)),
             substitution(1)
@@ -229,7 +230,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            ALIGNER.trace_back(&mtx, (1, 1), "A".as_bytes(), "A".as_bytes()),
+            aligner(b"A").trace_back(&mtx, (1, 1), b"A", b"A"),
             Alignment::from("A", "A", 1)
         );
     }
@@ -243,7 +244,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            ALIGNER.trace_back(&mtx, (1, 0), &['A' as u8], &[]),
+            aligner(b"").trace_back(&mtx, (1, 0), &[b'A'], &[]),
             Alignment::from("A", "_", -1)
         );
     }
@@ -256,7 +257,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            ALIGNER.trace_back(&mtx, (0, 1), &[], &['A' as u8]),
+            aligner(b"A").trace_back(&mtx, (0, 1), &[], &[b'A']),
             Alignment::from("_", "A", -1)
         );
     }
@@ -264,7 +265,7 @@ mod tests {
     #[test]
     fn test_match() {
         assert_eq!(
-            ALIGNER.align(b"AGCT", b"AGCT").unwrap(),
+            aligner(b"AGCT").align(b"AGCT").unwrap(),
             Alignment::from("AGCT", "AGCT", 4)
         )
     }
@@ -272,7 +273,7 @@ mod tests {
     #[test]
     fn test_mismatch() {
         assert_eq!(
-            ALIGNER.align(b"AGAT", b"AGCT").unwrap(),
+            aligner(b"AGCT").align(b"AGAT").unwrap(),
             Alignment::from("AGAT", "AGCT", 2)
         )
     }
@@ -280,7 +281,7 @@ mod tests {
     #[test]
     fn test_insertion() {
         assert_eq!(
-            ALIGNER.align(b"AGCT", b"AGT").unwrap(),
+            aligner(b"AGT").align(b"AGCT").unwrap(),
             Alignment::from("AGCT", "AG_T", 2)
         )
     }
@@ -288,7 +289,7 @@ mod tests {
     #[test]
     fn test_deletion() {
         assert_eq!(
-            ALIGNER.align(b"AGT", b"AGCT").unwrap(),
+            aligner(b"AGCT").align(b"AGT").unwrap(),
             Alignment::from("AG_T", "AGCT", 2)
         )
     }
@@ -296,7 +297,7 @@ mod tests {
     #[test]
     fn test_double_insertion() {
         assert_eq!(
-            ALIGNER.align(b"AGCT", b"AT").unwrap(),
+            aligner(b"AT").align(b"AGCT").unwrap(),
             Alignment::from("AGCT", "A__T", 0)
         )
     }
@@ -304,7 +305,7 @@ mod tests {
     #[test]
     fn test_double_deletion() {
         assert_eq!(
-            ALIGNER.align(b"AT", b"AGCT").unwrap(),
+            aligner(b"AGCT").align(b"AT").unwrap(),
             Alignment::from("A__T", "AGCT", 0)
         )
     }
@@ -312,7 +313,7 @@ mod tests {
     #[test]
     fn test_leading_insertion() {
         assert_eq!(
-            ALIGNER.align(b"AGCT", b"GCT").unwrap(),
+            aligner(b"GCT").align(b"AGCT").unwrap(),
             Alignment::from("AGCT", "_GCT", 2)
         )
     }
@@ -320,7 +321,7 @@ mod tests {
     #[test]
     fn test_leading_deletion() {
         assert_eq!(
-            ALIGNER.align(b"GCT", b"AGCT").unwrap(),
+            aligner(b"AGCT").align(b"GCT").unwrap(),
             Alignment::from("_GCT", "AGCT", 2)
         )
     }
@@ -328,7 +329,7 @@ mod tests {
     #[test]
     fn test_trailing_insertion() {
         assert_eq!(
-            ALIGNER.align(b"AGCT", b"AGC").unwrap(),
+            aligner(b"AGC").align(b"AGCT").unwrap(),
             Alignment::from("AGCT", "AGC_", 2)
         )
     }
@@ -336,7 +337,7 @@ mod tests {
     #[test]
     fn test_trailing_deletion() {
         assert_eq!(
-            ALIGNER.align(b"AGC", b"AGCT").unwrap(),
+            aligner(b"AGCT").align(b"AGC").unwrap(),
             Alignment::from("AGC_", "AGCT", 2)
         )
     }
@@ -344,7 +345,7 @@ mod tests {
     #[test]
     fn test_two_insertions() {
         assert_eq!(
-            ALIGNER.align(b"AGCT", b"GT").unwrap(),
+            aligner(b"GT").align(b"AGCT").unwrap(),
             Alignment::from("AGCT", "_G_T", 0)
         )
     }
@@ -352,7 +353,7 @@ mod tests {
     #[test]
     fn test_two_deletions() {
         assert_eq!(
-            ALIGNER.align(b"AC", b"AGCT").unwrap(),
+            aligner(b"AGCT").align(b"AC").unwrap(),
             Alignment::from("A_C_", "AGCT", 0)
         )
     }
@@ -360,7 +361,7 @@ mod tests {
     #[test]
     fn test_empty_subject() {
         assert_eq!(
-            ALIGNER.align(b"", b"AGCT").unwrap(),
+            aligner(b"AGCT").align(b"").unwrap(),
             Alignment::from("____", "AGCT", -4)
         )
     }
@@ -368,7 +369,7 @@ mod tests {
     #[test]
     fn test_empty_reference() {
         assert_eq!(
-            ALIGNER.align(b"AGCT", b"").unwrap(),
+            aligner(b"").align(b"AGCT").unwrap(),
             Alignment::from("AGCT", "____", -4)
         )
     }
@@ -376,14 +377,14 @@ mod tests {
     #[test]
     fn test_oversize_subject() {
         let long_seq = vec![b'A'; 40000];
-        let result = ALIGNER.align(&long_seq, b"A");
+        let result = aligner(b"A").align(&long_seq);
         assert_eq!(result, Err(AlignmentError::SequenceTooLong));
     }
 
     #[test]
     fn test_oversize_reference() {
         let long_seq = vec![b'A'; 40000];
-        let result = ALIGNER.align(b"A", &long_seq);
+        let result = aligner(&long_seq).align(b"A");
         assert_eq!(result, Err(AlignmentError::SequenceTooLong));
     }
 }

@@ -3,10 +3,11 @@ use crate::config::{AlignmentConfig};
 use crate::matrix::{Matrix, Idx, AlignmentError};
 use crate::matrix;
 
-pub trait Aligner<C>: From<C>
+pub trait Aligner<C>
     where C: AlignmentConfig {
 
-    fn align(&self, subject: &[u8], reference: &[u8]) -> Result<Alignment, AlignmentError> {
+    fn align(&self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
+        let reference = self.reference();
         self.check_sizes(subject.len(), reference.len())?;
         let mut mtx = matrix::of(subject.len() + 1, reference.len() + 1);
         self.fill_top_row(&mut mtx);
@@ -15,6 +16,8 @@ pub trait Aligner<C>: From<C>
         let end_idx: Idx = self.end_idx(&mtx);
         Ok(self.trace_back(&mtx, end_idx, &subject, &reference))
     }
+
+    fn reference(&self) -> &[u8];
 
     fn check_sizes(&self, subject_len: usize, reference_len: usize) -> Result<(), AlignmentError>;
 

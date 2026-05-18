@@ -16,12 +16,7 @@ use seqognize_benches::tests::read_tests;
 fn nt_alignment_benchmark(c: &mut Criterion) {
 
     let aligner: GlobalNtAligner = GlobalNtAligner {
-        config: NtAlignmentConfig {
-            match_score: 1,
-            mismatch_penalty: -1,
-            subject_gap_penalty: -1,
-            reference_gap_penalty: -1,
-        }
+        config: NtAlignmentConfig::new(1, -1, -1, -1),
     };
 
     let test_suite = read_tests();
@@ -34,7 +29,7 @@ fn nt_alignment_benchmark(c: &mut Criterion) {
     group.bench_function("NT alignment batch (100 sequences)", |b| {
         b.iter(|| {
             for mutant in &mutants {
-                aligner.align(mutant, &reference);
+                let _ = aligner.align(mutant, &reference).unwrap();
             }
         })
     });

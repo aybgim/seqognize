@@ -30,12 +30,7 @@ fn main() -> std::io::Result<()> {
     let mut rng = StdRng::seed_from_u64(SEED);
 
     let aligner: GlobalNtAligner = GlobalNtAligner {
-        config: NtAlignmentConfig {
-            match_score: 1,
-            mismatch_penalty: -1,
-            subject_gap_penalty: -1,
-            reference_gap_penalty: -1,
-        },
+        config: NtAlignmentConfig::new(1, -1, -1, -1),
     };
 
     // Generate reference sequence (1000 bp)
@@ -72,7 +67,7 @@ fn main() -> std::io::Result<()> {
             }
         }
 
-        let alignment = aligner.align(&sequence, &reference);
+        let alignment = aligner.align(&sequence, &reference).expect("Alignment failed during synthesis");
         let aligned_sequences = alignment.aligned_sequences();
         test_cases.push(TestCase {
             length,

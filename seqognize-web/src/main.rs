@@ -166,21 +166,24 @@ fn main() {
 
 impl Model {
     fn config(&mut self) -> Result<NtAlignmentConfig, ParseIntError> {
-        Ok(NtAlignmentConfig {
-            match_score: self.parser.parse(&self.match_score)?,
-            mismatch_penalty: self.parser.parse(&self.mismatch_score)?,
-            subject_gap_penalty: -1,
-            reference_gap_penalty: -1,
-        })
+        Ok(NtAlignmentConfig::new(
+            self.parser.parse(&self.match_score)?,
+            self.parser.parse(&self.mismatch_score)?,
+            -1i16,
+            -1i16,
+        ))
     }
 
     fn align(&mut self) -> Result<AlignmentResult, ParseIntError> {
         let config = self.config()?;
         let aligner = GlobalNtAligner { config };
-        let alignment = aligner.align(
+        let alignment = match aligner.align(
             &self.subject.as_bytes(),
             &self.reference.as_bytes(),
-        );
+        ) {
+            Ok(a) => a,
+            Err(_) => return Ok(AlignmentResult::empty()),
+        };
         let aligned_sequences = alignment.aligned_sequences();
         let alignment_str = format!("{}\n{}\n{}", aligned_sequences.0, aligned_sequences.1, aligned_sequences.2);
         Ok(AlignmentResult::of(alignment_str, alignment.score))

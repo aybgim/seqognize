@@ -37,12 +37,7 @@ mod tests {
     #[test]
     fn test_synth() {
         let aligner: GlobalNtAligner = GlobalNtAligner {
-            config: NtAlignmentConfig {
-                match_score: 1,
-                mismatch_penalty: -1,
-                subject_gap_penalty: -1,
-                reference_gap_penalty: -1,
-            }
+            config: NtAlignmentConfig::new(1, -1, -1, -1),
         };
 
         let test_suite = read_tests();
@@ -50,7 +45,7 @@ mod tests {
 
         test_suite.test_cases.iter().for_each(|test| {
             let sequence = test.sequence.as_bytes();
-            let alignment = aligner.align(&sequence, &reference);
+            let alignment = aligner.align(&sequence, &reference).expect("Alignment failed during test");
             assert_eq!(test.score, alignment.score);
             assert_eq!(test.aligned_sequences, alignment.aligned_sequences());
         });

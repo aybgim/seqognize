@@ -53,15 +53,15 @@ fn main() {
     let subject = matches.value_of("subject").unwrap().as_bytes();
 
     let aligner: GlobalNtAligner = GlobalNtAligner {
-        config: NtAlignmentConfig {
-            match_score: arg(&matches, "match", 1),
-            mismatch_penalty: arg(&matches, "mismatch", -1),
-            subject_gap_penalty: arg(&matches, "subject_gap", -1),
-            reference_gap_penalty: arg(&matches, "reference_gap", -1),
-        }
+        config: NtAlignmentConfig::new(
+            arg(&matches, "match", 1i16),
+            arg(&matches, "mismatch", -1i16),
+            arg(&matches, "subject_gap", -1i16),
+            arg(&matches, "reference_gap", -1i16),
+        )
     };
 
-    let alignment = aligner.align(&subject, &reference);
+    let alignment = aligner.align(&subject, &reference).expect("Alignment failed");
     println!("Score: {:?}", alignment.score);
     if matches.is_present("vertical") {
         alignment.print_vertical();

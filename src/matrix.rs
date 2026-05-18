@@ -2,12 +2,10 @@
 
 use crate::element::{Op, Element, Score};
 
-pub type MtxScore = i16;
-
 pub type Idx = (usize, usize);
 
 pub struct Matrix {
-    pub scores: Vec<MtxScore>,
+    pub scores: Vec<Score>,
     pub ops: Vec<Op>,
     pub rows: usize,
     pub cols: usize,
@@ -35,7 +33,7 @@ impl Matrix {
     #[inline]
     pub fn set(&mut self, idx: Idx, element: Element) {
         let i = idx.0 * self.cols + idx.1;
-        self.scores[i] = element.score as MtxScore;
+        self.scores[i] = element.score as Score;
         self.ops[i] = element.op;
     }
 

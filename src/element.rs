@@ -1,6 +1,6 @@
 use std::ops::Add;
 
-pub type Score = i32;
+pub type Score = i16;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Op {

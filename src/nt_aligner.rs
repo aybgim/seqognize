@@ -1,7 +1,7 @@
 use crate::config::AlignmentConfig;
 use crate::aligner::{Aligner};
 use crate::alignment::{Alignment, AlignmentBuilder};
-use crate::matrix::{Matrix, Idx, MtxScore};
+use crate::matrix::{Matrix, Idx};
 use crate::{matrix};
 use crate::element::{Score, Element, Op};
 
@@ -42,7 +42,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
         mtx.ops[0] = Op::START;
         for col in 1..ncols {
             acc += self.config.get_subject_gap_opening_penalty(col - 1);
-            mtx.scores[col] = acc as MtxScore;
+            mtx.scores[col] = acc;
             mtx.ops[col] = Op::DELETE;
         }
     }
@@ -55,7 +55,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
         mtx.ops[0] = Op::START;
         for row in 1..nrows {
             acc += self.config.get_reference_gap_opening_penalty(row - 1);
-            mtx.scores[row * ncols] = acc as MtxScore;
+            mtx.scores[row * ncols] = acc;
             mtx.ops[row * ncols] = Op::INSERT;
         }
     }
@@ -69,11 +69,11 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             for col in 1..ncols {
                 let r = reference[col - 1];
                 
-                let score_match = mtx.scores[prev_row_offset + col - 1] as Score +
+                let score_match = mtx.scores[prev_row_offset + col - 1] +
                     self.config.get_substitution_score((row, col), s, r);
-                let score_insert = mtx.scores[prev_row_offset + col] as Score +
+                let score_insert = mtx.scores[prev_row_offset + col] +
                     self.config.get_reference_gap_opening_penalty(row);
-                let score_delete = mtx.scores[row_offset + col - 1] as Score +
+                let score_delete = mtx.scores[row_offset + col - 1] +
                     self.config.get_subject_gap_opening_penalty(col);
 
                 let (score, op) = if score_match >= score_insert && score_match >= score_delete {
@@ -84,7 +84,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                     (score_delete, Op::DELETE)
                 };
 
-                mtx.scores[row_offset + col] = score as MtxScore;
+                mtx.scores[row_offset + col] = score;
                 mtx.ops[row_offset + col] = op;
             }
         }

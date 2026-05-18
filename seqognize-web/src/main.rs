@@ -6,6 +6,7 @@ use yew::services::{DialogService};
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use seqognize::aligner::Aligner;
 use std::num::ParseIntError;
+use seqognize::element::Score;
 
 struct Model {
     reference: String,
@@ -147,8 +148,8 @@ impl Parser {
         Parser { dialog: DialogService::new() }
     }
 
-    fn parse(&mut self, value: &str) -> Result<i32, ParseIntError> {
-        match value.parse::<i32>() {
+    fn parse(&mut self, value: &str) -> Result<Score, ParseIntError> {
+        match value.parse::<Score>() {
             Ok(number) => Ok(number),
             Err(e) => {
                 let msg = format!("Invalid number: {}", value);
@@ -188,11 +189,11 @@ impl Model {
 
 struct AlignmentResult {
     alignment: String,
-    score: Option<i32>,
+    score: Option<Score>,
 }
 
 impl AlignmentResult {
-    fn of(alignment: String, score: i32) -> Self {
+    fn of(alignment: String, score: Score) -> Self {
         AlignmentResult { alignment, score: Some(score) }
     }
 

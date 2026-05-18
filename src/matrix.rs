@@ -19,7 +19,9 @@ impl fmt::Display for AlignmentError {
 }
 
 pub struct Matrix {
-    pub scores: Vec<Score>,
+    /// Recycled score rows (current and previous)
+    pub scores: [Vec<Score>; 2],
+    /// Full operations table for traceback
     pub ops: Vec<Op>,
     pub rows: usize,
     pub cols: usize,
@@ -27,10 +29,9 @@ pub struct Matrix {
 
 impl Matrix {
     pub fn of(rows: usize, cols: usize) -> Self {
-        let size = rows * cols;
         Matrix {
-            scores: vec![0; size],
-            ops: vec![Op::START; size],
+            scores: [vec![0; cols], vec![0; cols]],
+            ops: vec![Op::START; rows * cols],
             rows,
             cols,
         }
@@ -45,18 +46,32 @@ impl Matrix {
     }
 
     #[inline]
-    pub fn set(&mut self, idx: Idx, element: Element) {
-        let i = idx.0 * self.cols + idx.1;
-        self.scores[i] = element.score as Score;
-        self.ops[i] = element.op;
+    pub fn set_score(&mut self, row_parity: usize, col: usize, score: Score) {
+        self.scores[row_parity][col] = score;
     }
 
     #[inline]
+    pub fn get_score(&self, row_parity: usize, col: usize) -> Score {
+        self.scores[row_parity][col]
+    }
+
+    #[inline]
+    pub fn set_op(&mut self, row: usize, col: usize, op: Op) {
+        self.ops[row * self.cols + col] = op;
+    }
+
+    #[inline]
+    pub fn get_op(&self, row: usize, col: usize) -> Op {
+        self.ops[row * self.cols + col]
+    }
+
+    /// Transparent read for traceback. 
+    /// Note: Score is only valid for the very last cell visited (bottom-right).
+    #[inline]
     pub fn get(&self, idx: Idx) -> Element {
-        let i = idx.0 * self.cols + idx.1;
         Element {
-            score: self.scores[i] as Score,
-            op: self.ops[i],
+            score: self.scores[idx.0 % 2][idx.1],
+            op: self.ops[idx.0 * self.cols + idx.1],
         }
     }
 }
@@ -69,7 +84,8 @@ pub fn from_elements<const R: usize, const C: usize>(elements: [[Element; C]; R]
     let mut mtx = Matrix::of(R, C);
     for r in 0..R {
         for c in 0..C {
-            mtx.set((r, c), elements[r][c]);
+            mtx.set_score(r % 2, c, elements[r][c].score);
+            mtx.set_op(r, c, elements[r][c].op);
         }
     }
     mtx

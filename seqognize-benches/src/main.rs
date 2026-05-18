@@ -10,15 +10,13 @@
 //! cargo run -p seqognize-benches --bin synth
 //! ```
 
-mod tests;
-
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use seqognize::aligner::Aligner;
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use std::fs::File;
 use std::io::BufWriter;
-use crate::tests::{TestCase, TestSuite};
+use seqognize_benches::tests::{TestCase, TestSuite};
 
 const BASES: &[u8] = b"ACGT";
 const SEED: u64 = 42;

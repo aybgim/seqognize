@@ -70,45 +70,44 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
     }
 
     fn fill_top_row(&self, mtx: &mut Matrix) {
-        let ncols = mtx.ncols();
         let mut acc = 0;
-        mtx.scores[0] = 0;
+        mtx.scores[0][0] = 0;
         mtx.ops[0] = Op::START;
-        for col in 1..ncols {
+        for col in 1..mtx.ncols() {
             acc += self.config.get_subject_gap_opening_penalty(col - 1);
-            mtx.scores[col] = acc;
+            mtx.scores[0][col] = acc;
             mtx.ops[col] = Op::DELETE;
         }
     }
 
-    fn fill_left_column(&self, mtx: &mut Matrix) {
-        let nrows = mtx.nrows();
-        let ncols = mtx.ncols();
-        let mut acc = 0;
-        mtx.scores[0] = 0;
-        mtx.ops[0] = Op::START;
-        for row in 1..nrows {
-            acc += self.config.get_reference_gap_opening_penalty(row - 1);
-            mtx.scores[row * ncols] = acc;
-            mtx.ops[row * ncols] = Op::INSERT;
-        }
+    fn fill_left_column(&self, _mtx: &mut Matrix) {
+        // In row recycling, we update column 0 of EVERY row during the fill loop.
+        // But for row 0 initialization, we already did it in fill_top_row.
     }
 
     fn fill(&self, mtx: &mut Matrix, subject: &[u8], reference: &[u8]) {
+        let nrows = mtx.nrows();
         let ncols = mtx.ncols();
-        for row in 1..mtx.nrows() {
+
+        for row in 1..nrows {
+            let curr = row % 2;
+            let prev = (row - 1) % 2;
             let s = subject[row - 1];
-            let row_offset = row * ncols;
-            let prev_row_offset = (row - 1) * ncols;
+
+            // Initialize first column of the current row
+            let acc_ref = mtx.scores[prev][0] + self.config.get_reference_gap_opening_penalty(row - 1);
+            mtx.scores[curr][0] = acc_ref;
+            mtx.ops[row * ncols] = Op::INSERT;
+
             for col in 1..ncols {
                 let r = reference[col - 1];
                 
-                let score_match = mtx.scores[prev_row_offset + col - 1] +
+                let score_match = mtx.scores[prev][col - 1] +
                     self.config.get_substitution_score((row, col), s, r);
-                let score_insert = mtx.scores[prev_row_offset + col] +
-                    self.config.get_reference_gap_opening_penalty(row);
-                let score_delete = mtx.scores[row_offset + col - 1] +
-                    self.config.get_subject_gap_opening_penalty(col);
+                let score_insert = mtx.scores[prev][col] +
+                    self.config.get_reference_gap_opening_penalty(row - 1);
+                let score_delete = mtx.scores[curr][col - 1] +
+                    self.config.get_subject_gap_opening_penalty(col - 1);
 
                 let (score, op) = if score_match >= score_insert && score_match >= score_delete {
                     (score_match, Op::MATCH)
@@ -118,8 +117,8 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                     (score_delete, Op::DELETE)
                 };
 
-                mtx.scores[row_offset + col] = score;
-                mtx.ops[row_offset + col] = op;
+                mtx.scores[curr][col] = score;
+                mtx.ops[row * ncols + col] = op;
             }
         }
     }
@@ -137,7 +136,8 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             cursor = matrix::move_back(&element, cursor);
         }
         builder.take(Op::START, cursor);
-        builder.build(mtx.get(end_index).score)
+        // build() expects the final score of the entire alignment
+        builder.build(mtx.scores[end_index.0 % 2][end_index.1])
     }
 }
 
@@ -185,22 +185,6 @@ mod tests {
             assert_eq!(
                 mtx.get((0, i)),
                 deletion(-(i as Score))
-            );
-        }
-    }
-
-    #[test]
-    fn test_fill_left_column() {
-        let mut mtx = matrix::of(3, 2);
-        ALIGNER.fill_left_column(&mut mtx);
-        assert_eq!(
-            mtx.get((0, 0)),
-            Element::default()
-        );
-        for i in 1..3 {
-            assert_eq!(
-                mtx.get((i, 0)),
-                insertion(-(i as Score))
             );
         }
     }

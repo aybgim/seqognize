@@ -4,6 +4,7 @@ use crate::alignment::{Alignment, AlignmentBuilder};
 use crate::matrix::{Matrix, Idx, AlignmentError};
 use crate::{matrix};
 use crate::element::{Score, Element, Op};
+use wide::*;
 
 pub struct NtAlignmentConfig {
     pub match_score: Score,
@@ -72,25 +73,20 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
     fn fill_top_row(&self, mtx: &mut Matrix) {
         let ncols = mtx.ncols();
         let mut acc = 0;
-        mtx.scores[0] = 0;
-        mtx.ops[0] = Op::START;
+        mtx.set((0, 0), Element { score: 0, op: Op::START });
         for col in 1..ncols {
             acc += self.config.get_subject_gap_opening_penalty(col - 1);
-            mtx.scores[col] = acc;
-            mtx.ops[col] = Op::DELETE;
+            mtx.set((0, col), deletion(acc));
         }
     }
 
     fn fill_left_column(&self, mtx: &mut Matrix) {
         let nrows = mtx.nrows();
-        let ncols = mtx.ncols();
         let mut acc = 0;
-        mtx.scores[0] = 0;
-        mtx.ops[0] = Op::START;
+        mtx.set((0, 0), Element { score: 0, op: Op::START });
         for row in 1..nrows {
             acc += self.config.get_reference_gap_opening_penalty(row - 1);
-            mtx.scores[row * ncols] = acc;
-            mtx.ops[row * ncols] = Op::INSERT;
+            mtx.set((row, 0), insertion(acc));
         }
     }
 
@@ -98,29 +94,75 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
         let nrows = mtx.nrows();
         let ncols = mtx.ncols();
 
-        // The number of anti-diagonals in the (nrows-1) x (ncols-1) submatrix.
-        // The first valid cell for calculation is (1, 1), which is on diagonal k=2.
-        // The last cell is (nrows-1, ncols-1), which is on diagonal k = (nrows-1) + (ncols-1).
         for k in 2..(nrows + ncols - 1) {
-            // Determine the range of rows that are valid for this diagonal k.
-            // i + j = k => j = k - i. 
-            // Since 1 <= i < nrows and 1 <= j < ncols:
-            // 1 <= k - i < ncols => i <= k - 1 and i > k - ncols.
             let i_min = 1.max(if k >= ncols { k - ncols + 1 } else { 1 });
             let i_max = (nrows - 1).min(k - 1);
 
-            for row in i_min..=i_max {
-                let col = k - row;
-                let s = subject[row - 1];
-                let r = reference[col - 1];
+            let mut row = i_min;
+            
+            // SIMD loop
+            while row + 7 <= i_max {
+                let mut scores_match_base = [0i16; 8];
+                let mut scores_insert = [0i16; 8];
+                let mut scores_delete = [0i16; 8];
+                let mut sub_scores = [0i16; 8];
 
-                let row_offset = row * ncols;
-                let prev_row_offset = (row - 1) * ncols;
+                for i in 0..8 {
+                    let r = row + i;
+                    let c = k - r;
+                    let l_idx = r * ncols + c;
+                    
+                    scores_match_base[i] = mtx.scores[l_idx - ncols - 1];
+                    scores_insert[i] = mtx.scores[l_idx - ncols] + self.config.get_reference_gap_opening_penalty(r);
+                    scores_delete[i] = mtx.scores[l_idx - 1] + self.config.get_subject_gap_opening_penalty(c);
+                    
+                    sub_scores[i] = if subject[r - 1] == reference[c - 1] {
+                        self.config.match_score
+                    } else {
+                        self.config.mismatch_penalty
+                    };
+                }
+
+                let v_scores_match = i16x8::from(scores_match_base) + i16x8::from(sub_scores);
+                let v_scores_insert = i16x8::from(scores_insert);
+                let v_scores_delete = i16x8::from(scores_delete);
+
+                let v_max_score = v_scores_match.max(v_scores_insert.max(v_scores_delete));
+                
+                let mask_match = v_max_score.cmp_eq(v_scores_match);
+                let mask_insert = v_max_score.cmp_eq(v_scores_insert) & !mask_match;
+
+                let v_ops = mask_match.blend(i16x8::from(Op::MATCH as i16), 
+                                mask_insert.blend(i16x8::from(Op::INSERT as i16), 
+                                                i16x8::from(Op::DELETE as i16)));
+
+                let final_scores: [i16; 8] = v_max_score.into();
+                let final_ops: [i16; 8] = v_ops.into();
+
+                for i in 0..8 {
+                    let r = row + i;
+                    let c = k - r;
+                    let l_idx = r * ncols + c;
+                    mtx.scores[l_idx] = final_scores[i];
+                    mtx.ops[l_idx] = unsafe { std::mem::transmute(final_ops[i] as u8) };
+                }
+
+                row += 8;
+            }
+
+            // Scalar Peeling
+            for r in row..=i_max {
+                let col = k - r;
+                let s = subject[r - 1];
+                let r_base = reference[col - 1];
+
+                let row_offset = r * ncols;
+                let prev_row_offset = (r - 1) * ncols;
 
                 let score_match = mtx.scores[prev_row_offset + col - 1] +
-                    self.config.get_substitution_score((row, col), s, r);
+                    self.config.get_substitution_score((r, col), s, r_base);
                 let score_insert = mtx.scores[prev_row_offset + col] +
-                    self.config.get_reference_gap_opening_penalty(row);
+                    self.config.get_reference_gap_opening_penalty(r);
                 let score_delete = mtx.scores[row_offset + col - 1] +
                     self.config.get_subject_gap_opening_penalty(col);
 

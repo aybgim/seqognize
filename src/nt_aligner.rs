@@ -95,14 +95,28 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
     }
 
     fn fill(&self, mtx: &mut Matrix, subject: &[u8], reference: &[u8]) {
+        let nrows = mtx.nrows();
         let ncols = mtx.ncols();
-        for row in 1..mtx.nrows() {
-            let s = subject[row - 1];
-            let row_offset = row * ncols;
-            let prev_row_offset = (row - 1) * ncols;
-            for col in 1..ncols {
+
+        // The number of anti-diagonals in the (nrows-1) x (ncols-1) submatrix.
+        // The first valid cell for calculation is (1, 1), which is on diagonal k=2.
+        // The last cell is (nrows-1, ncols-1), which is on diagonal k = (nrows-1) + (ncols-1).
+        for k in 2..(nrows + ncols - 1) {
+            // Determine the range of rows that are valid for this diagonal k.
+            // i + j = k => j = k - i. 
+            // Since 1 <= i < nrows and 1 <= j < ncols:
+            // 1 <= k - i < ncols => i <= k - 1 and i > k - ncols.
+            let i_min = 1.max(if k >= ncols { k - ncols + 1 } else { 1 });
+            let i_max = (nrows - 1).min(k - 1);
+
+            for row in i_min..=i_max {
+                let col = k - row;
+                let s = subject[row - 1];
                 let r = reference[col - 1];
-                
+
+                let row_offset = row * ncols;
+                let prev_row_offset = (row - 1) * ncols;
+
                 let score_match = mtx.scores[prev_row_offset + col - 1] +
                     self.config.get_substitution_score((row, col), s, r);
                 let score_insert = mtx.scores[prev_row_offset + col] +

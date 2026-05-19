@@ -72,17 +72,16 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
     fn fill_top_row(&self, mtx: &mut Matrix) {
         let mut acc = 0;
         mtx.scores[0][0] = 0;
-        mtx.ops[0] = Op::START;
+        mtx.set_op(0, 0, Op::START);
         for col in 1..mtx.ncols() {
             acc += self.config.get_subject_gap_opening_penalty(col - 1);
             mtx.scores[0][col] = acc;
-            mtx.ops[col] = Op::DELETE;
+            mtx.set_op(0, col, Op::DELETE);
         }
     }
 
     fn fill_left_column(&self, _mtx: &mut Matrix) {
         // In row recycling, we update column 0 of EVERY row during the fill loop.
-        // But for row 0 initialization, we already did it in fill_top_row.
     }
 
     fn fill(&self, mtx: &mut Matrix, subject: &[u8], reference: &[u8]) {
@@ -97,7 +96,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             // Initialize first column of the current row
             let acc_ref = mtx.scores[prev][0] + self.config.get_reference_gap_opening_penalty(row - 1);
             mtx.scores[curr][0] = acc_ref;
-            mtx.ops[row * ncols] = Op::INSERT;
+            mtx.set_op(row, 0, Op::INSERT);
 
             for col in 1..ncols {
                 let r = reference[col - 1];
@@ -118,7 +117,13 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 };
 
                 mtx.scores[curr][col] = score;
-                mtx.ops[row * ncols + col] = op;
+                
+                // Optimized bit-packing write
+                let linear_idx = row * ncols + col;
+                let byte_idx = linear_idx >> 2;
+                let bit_shift = (linear_idx & 0b11) << 1;
+                let mask = !(0b11 << bit_shift);
+                mtx.packed_ops[byte_idx] = (mtx.packed_ops[byte_idx] & mask) | ((op as u8) << bit_shift);
             }
         }
     }
@@ -136,7 +141,6 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             cursor = matrix::move_back(&element, cursor);
         }
         builder.take(Op::START, cursor);
-        // build() expects the final score of the entire alignment
         builder.build(mtx.scores[end_index.0 % 2][end_index.1])
     }
 }
@@ -160,7 +164,7 @@ mod tests {
     use crate::matrix;
     use crate::matrix::AlignmentError;
     use crate::alignment::Alignment;
-    use crate::element::{Score, Element};
+    use crate::element::{Score, Element, Op};
 
     const ALIGNER: GlobalNtAligner = GlobalNtAligner {
         config: NtAlignmentConfig {

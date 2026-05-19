@@ -2,12 +2,13 @@ use std::ops::Add;
 
 pub type Score = i16;
 
+#[repr(u8)]
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Op {
-    START,
-    INSERT,
-    MATCH,
-    DELETE,
+    START = 0,
+    INSERT = 1,
+    MATCH = 2,
+    DELETE = 3,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]

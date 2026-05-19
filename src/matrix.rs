@@ -21,17 +21,18 @@ impl fmt::Display for AlignmentError {
 pub struct Matrix {
     /// Recycled score rows (current and previous)
     pub scores: [Vec<Score>; 2],
-    /// Full operations table for traceback
-    pub ops: Vec<Op>,
+    /// 2 bits per Op, packed into u8 (4 ops per byte)
+    pub packed_ops: Vec<u8>,
     pub rows: usize,
     pub cols: usize,
 }
 
 impl Matrix {
     pub fn of(rows: usize, cols: usize) -> Self {
+        let size = rows * cols;
         Matrix {
             scores: [vec![0; cols], vec![0; cols]],
-            ops: vec![Op::START; rows * cols],
+            packed_ops: vec![0; (size + 3) / 4],
             rows,
             cols,
         }
@@ -57,12 +58,21 @@ impl Matrix {
 
     #[inline]
     pub fn set_op(&mut self, row: usize, col: usize, op: Op) {
-        self.ops[row * self.cols + col] = op;
+        let linear_idx = row * self.cols + col;
+        let byte_idx = linear_idx >> 2;
+        let bit_shift = (linear_idx & 0b11) << 1;
+        let mask = !(0b11 << bit_shift);
+        self.packed_ops[byte_idx] = (self.packed_ops[byte_idx] & mask) | ((op as u8) << bit_shift);
     }
 
     #[inline]
     pub fn get_op(&self, row: usize, col: usize) -> Op {
-        self.ops[row * self.cols + col]
+        let linear_idx = row * self.cols + col;
+        let byte_idx = linear_idx >> 2;
+        let bit_shift = (linear_idx & 0b11) << 1;
+        let op_bits = (self.packed_ops[byte_idx] >> bit_shift) & 0b11;
+        // Safety: Op is repr(u8) and defined for 0-3.
+        unsafe { std::mem::transmute(op_bits) }
     }
 
     /// Transparent read for traceback. 
@@ -71,7 +81,7 @@ impl Matrix {
     pub fn get(&self, idx: Idx) -> Element {
         Element {
             score: self.scores[idx.0 % 2][idx.1],
-            op: self.ops[idx.0 * self.cols + idx.1],
+            op: self.get_op(idx.0, idx.1),
         }
     }
 }

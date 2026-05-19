@@ -71,20 +71,18 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
     }
 
     fn fill_top_row(&self, mtx: &mut Matrix) {
-        let ncols = mtx.ncols();
         let mut acc = 0;
         mtx.set((0, 0), Element { score: 0, op: Op::START });
-        for col in 1..ncols {
+        for col in 1..mtx.ncols() {
             acc += self.config.get_subject_gap_opening_penalty(col - 1);
             mtx.set((0, col), deletion(acc));
         }
     }
 
     fn fill_left_column(&self, mtx: &mut Matrix) {
-        let nrows = mtx.nrows();
         let mut acc = 0;
         mtx.set((0, 0), Element { score: 0, op: Op::START });
-        for row in 1..nrows {
+        for row in 1..mtx.nrows() {
             acc += self.config.get_reference_gap_opening_penalty(row - 1);
             mtx.set((row, 0), insertion(acc));
         }
@@ -99,23 +97,32 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             let i_max = (nrows - 1).min(k - 1);
 
             let mut row = i_min;
+
+            // Offset to the start of rows in the sheared matrix
+            let k_offset = k * nrows;
+            let k_prev1_offset = (k - 1) * nrows;
+            let k_prev2_offset = (k - 2) * nrows;
             
             // SIMD loop
             while row + 7 <= i_max {
-                let mut scores_match_base = [0i16; 8];
-                let mut scores_insert = [0i16; 8];
-                let mut scores_delete = [0i16; 8];
-                let mut sub_scores = [0i16; 8];
+                // Diagonal k, cell (r, k-r)
+                // Match comes from diagonal k-2, cell (r-1, k-r-1). 
+                // In sheared storage: (k-2)*nrows + (r-1). Contiguous with r!
+                let v_scores_match_base = i16x8::from(&mtx.scores[k_prev2_offset + row - 1..k_prev2_offset + row + 7]);
+                
+                // Up comes from diagonal k-1, cell (r-1, k-r).
+                // In sheared storage: (k-1)*nrows + (r-1). Contiguous with r!
+                let v_scores_insert = i16x8::from(&mtx.scores[k_prev1_offset + row - 1..k_prev1_offset + row + 7]);
+                
+                // Left comes from diagonal k-1, cell (r, k-r-1).
+                // In sheared storage: (k-1)*nrows + r. Contiguous with r!
+                let v_scores_delete = i16x8::from(&mtx.scores[k_prev1_offset + row..k_prev1_offset + row + 8]);
 
+                // Sequence comparisons
+                let mut sub_scores = [0i16; 8];
                 for i in 0..8 {
                     let r = row + i;
                     let c = k - r;
-                    let l_idx = r * ncols + c;
-                    
-                    scores_match_base[i] = mtx.scores[l_idx - ncols - 1];
-                    scores_insert[i] = mtx.scores[l_idx - ncols] + self.config.get_reference_gap_opening_penalty(r);
-                    scores_delete[i] = mtx.scores[l_idx - 1] + self.config.get_subject_gap_opening_penalty(c);
-                    
                     sub_scores[i] = if subject[r - 1] == reference[c - 1] {
                         self.config.match_score
                     } else {
@@ -123,14 +130,18 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                     };
                 }
 
-                let v_scores_match = i16x8::from(scores_match_base) + i16x8::from(sub_scores);
-                let v_scores_insert = i16x8::from(scores_insert);
-                let v_scores_delete = i16x8::from(scores_delete);
+                let v_scores_match = v_scores_match_base + i16x8::from(sub_scores);
+                
+                let v_ref_gap = i16x8::from(self.config.reference_gap_penalty);
+                let v_sub_gap = i16x8::from(self.config.subject_gap_penalty);
+                
+                let v_scores_insert_final = v_scores_insert + v_ref_gap;
+                let v_scores_delete_final = v_scores_delete + v_sub_gap;
 
-                let v_max_score = v_scores_match.max(v_scores_insert.max(v_scores_delete));
+                let v_max_score = v_scores_match.max(v_scores_insert_final.max(v_scores_delete_final));
                 
                 let mask_match = v_max_score.cmp_eq(v_scores_match);
-                let mask_insert = v_max_score.cmp_eq(v_scores_insert) & !mask_match;
+                let mask_insert = v_max_score.cmp_eq(v_scores_insert_final) & !mask_match;
 
                 let v_ops = mask_match.blend(i16x8::from(Op::MATCH as i16), 
                                 mask_insert.blend(i16x8::from(Op::INSERT as i16), 
@@ -140,9 +151,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 let final_ops: [i16; 8] = v_ops.into();
 
                 for i in 0..8 {
-                    let r = row + i;
-                    let c = k - r;
-                    let l_idx = r * ncols + c;
+                    let l_idx = k_offset + row + i;
                     mtx.scores[l_idx] = final_scores[i];
                     mtx.ops[l_idx] = unsafe { std::mem::transmute(final_ops[i] as u8) };
                 }
@@ -156,14 +165,11 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 let s = subject[r - 1];
                 let r_base = reference[col - 1];
 
-                let row_offset = r * ncols;
-                let prev_row_offset = (r - 1) * ncols;
-
-                let score_match = mtx.scores[prev_row_offset + col - 1] +
+                let score_match = mtx.scores[k_prev2_offset + r - 1] +
                     self.config.get_substitution_score((r, col), s, r_base);
-                let score_insert = mtx.scores[prev_row_offset + col] +
+                let score_insert = mtx.scores[k_prev1_offset + r - 1] +
                     self.config.get_reference_gap_opening_penalty(r);
-                let score_delete = mtx.scores[row_offset + col - 1] +
+                let score_delete = mtx.scores[k_prev1_offset + r] +
                     self.config.get_subject_gap_opening_penalty(col);
 
                 let (score, op) = if score_match >= score_insert && score_match >= score_delete {
@@ -174,8 +180,9 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                     (score_delete, Op::DELETE)
                 };
 
-                mtx.scores[row_offset + col] = score;
-                mtx.ops[row_offset + col] = op;
+                let l_idx = k_offset + r;
+                mtx.scores[l_idx] = score;
+                mtx.ops[l_idx] = op;
             }
         }
     }

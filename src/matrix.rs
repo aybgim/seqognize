@@ -27,7 +27,12 @@ pub struct Matrix {
 
 impl Matrix {
     pub fn of(rows: usize, cols: usize) -> Self {
-        let size = rows * cols;
+        // We use a sheared layout where diagonal k = row + col is stored contiguously.
+        // Index mapping: (row, col) -> (row + col) * rows + row
+        // Total diagonals: (rows-1) + (cols-1) = rows + cols - 2. 
+        // Max index is (rows+cols-2)*rows + (rows-1).
+        // To be safe, we allocate (rows + cols) * rows.
+        let size = (rows + cols) * rows;
         Matrix {
             scores: vec![0; size],
             ops: vec![Op::START; size],
@@ -45,17 +50,22 @@ impl Matrix {
     }
 
     #[inline]
+    fn linear_idx(&self, row: usize, col: usize) -> usize {
+        (row + col) * self.rows + row
+    }
+
+    #[inline]
     pub fn set(&mut self, idx: Idx, element: Element) {
-        let i = idx.0 * self.cols + idx.1;
-        self.scores[i] = element.score as Score;
+        let i = self.linear_idx(idx.0, idx.1);
+        self.scores[i] = element.score;
         self.ops[i] = element.op;
     }
 
     #[inline]
     pub fn get(&self, idx: Idx) -> Element {
-        let i = idx.0 * self.cols + idx.1;
+        let i = self.linear_idx(idx.0, idx.1);
         Element {
-            score: self.scores[i] as Score,
+            score: self.scores[i],
             op: self.ops[i],
         }
     }

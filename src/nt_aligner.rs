@@ -108,15 +108,15 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 // Diagonal k, cell (r, k-r)
                 // Match comes from diagonal k-2, cell (r-1, k-r-1). 
                 // In sheared storage: (k-2)*nrows + (r-1). Contiguous with r!
-                let v_scores_match_base = i16x8::from(&mtx.scores[k_prev2_offset + row - 1..k_prev2_offset + row + 7]);
+                let v_scores_match_base = i16x8::from(mtx.scores[k_prev2_offset + row - 1..k_prev2_offset + row + 7].try_into().map(|a: [i16; 8]| a).unwrap());
                 
                 // Up comes from diagonal k-1, cell (r-1, k-r).
                 // In sheared storage: (k-1)*nrows + (r-1). Contiguous with r!
-                let v_scores_insert = i16x8::from(&mtx.scores[k_prev1_offset + row - 1..k_prev1_offset + row + 7]);
+                let v_scores_insert = i16x8::from(mtx.scores[k_prev1_offset + row - 1..k_prev1_offset + row + 7].try_into().map(|a: [i16; 8]| a).unwrap());
                 
                 // Left comes from diagonal k-1, cell (r, k-r-1).
                 // In sheared storage: (k-1)*nrows + r. Contiguous with r!
-                let v_scores_delete = i16x8::from(&mtx.scores[k_prev1_offset + row..k_prev1_offset + row + 8]);
+                let v_scores_delete = i16x8::from(mtx.scores[k_prev1_offset + row..k_prev1_offset + row + 8].try_into().map(|a: [i16; 8]| a).unwrap());
 
                 // Sequence comparisons
                 let mut sub_scores = [0i16; 8];

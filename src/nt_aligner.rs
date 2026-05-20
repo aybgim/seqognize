@@ -193,20 +193,13 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             for i in 0..actual_batch_size {
                 let sub = chunk_subjects[i];
                 let end_idx = (sub.len(), ref_len);
-                
-                let mut mtx = Matrix::of(sub.len() + 1, ref_len + 1);
-                for r in 0..=sub.len() {
-                    for c in 0..=ref_len {
-                        let l_idx = r * ncols + c;
-                        let ops_simd: [i16; 8] = self.ops[l_idx].into();
-                        mtx.set_op(r, c, unsafe { std::mem::transmute(ops_simd[i] as u8) });
-                    }
-                }
 
                 let mut builder = AlignmentBuilder::new(sub, &self.reference);
                 let mut cursor = end_idx;
                 while cursor != (0, 0) {
-                    let op = mtx.get_op(cursor.0, cursor.1);
+                    let l_idx = cursor.0 * ncols + cursor.1;
+                    let ops_simd: [i16; 8] = self.ops[l_idx].into();
+                    let op: Op = unsafe { std::mem::transmute(ops_simd[i] as u8) };
                     builder.take(op, cursor);
                     cursor = matrix::move_back_op(op, cursor);
                 }
@@ -251,11 +244,9 @@ pub fn substitution(score: Score) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use crate::nt_aligner::{GlobalNtAligner, NtAlignmentConfig, deletion, substitution};
+    use crate::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
     use crate::aligner::Aligner;
-    use crate::matrix::AlignmentError;
     use crate::alignment::Alignment;
-    use crate::element::{Score, Element, Op};
 
     fn aligner(reference: &[u8]) -> GlobalNtAligner {
         GlobalNtAligner::new(

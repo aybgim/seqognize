@@ -20,18 +20,16 @@ fn nt_alignment_benchmark(c: &mut Criterion) {
         .map(|test| test.sequence.as_bytes())
         .collect();
 
-    let aligner: GlobalNtAligner = GlobalNtAligner::new(
+    let mut aligner = GlobalNtAligner::new(
         NtAlignmentConfig::new(1, -1, -1, -1),
         reference.to_vec()
-    );
+    ).expect("Failed to create aligner");
 
     let mut group = c.benchmark_group("Alignment");
     group.sample_size(10);
     group.bench_function("NT alignment batch (100 sequences)", |b| {
         b.iter(|| {
-            for mutant in &mutants {
-                let _ = aligner.align(mutant).unwrap();
-            }
+            let _ = aligner.align_batch(&mutants);
         })
     });
     group.finish();

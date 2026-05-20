@@ -49,10 +49,10 @@ fn main() {
             .takes_value(false))
         .get_matches();
 
-    let reference = matches.value_of("reference").unwrap().as_bytes();
-    let subject = matches.value_of("subject").unwrap().as_bytes();
+    let reference = matches.value_of("reference").expect("reference is required").as_bytes();
+    let subject = matches.value_of("subject").expect("subject is required").as_bytes();
 
-    let aligner: GlobalNtAligner = GlobalNtAligner::new(
+    let mut aligner = GlobalNtAligner::new(
         NtAlignmentConfig::new(
             arg(&matches, "match", 1i16),
             arg(&matches, "mismatch", -1i16),
@@ -60,7 +60,7 @@ fn main() {
             arg(&matches, "reference_gap", -1i16),
         ),
         reference.to_vec()
-    );
+    ).expect("Failed to create aligner");
 
     let alignment = aligner.align(&subject).expect("Alignment failed");
     println!("Score: {:?}", alignment.score);

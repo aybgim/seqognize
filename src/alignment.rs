@@ -1,8 +1,31 @@
-use crate::element::{Score, Op};
-use crate::matrix::Idx;
 use core::iter;
+use crate::config::Score;
+use num_enum::TryFromPrimitive;
 
 pub const GAP: char = '_';
+
+#[repr(u8)]
+#[derive(Debug, PartialEq, Clone, Copy, TryFromPrimitive)]
+pub enum Op {
+    START,
+    INSERT,
+    MATCH,
+    DELETE,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Idx(pub usize, pub usize);
+
+impl Idx {
+    pub fn move_back(&self, op: Op) -> Self {
+        match op {
+            Op::MATCH => Idx(self.0 - 1, self.1 - 1),
+            Op::INSERT => Idx(self.0 - 1, self.1),
+            Op::DELETE => Idx(self.0, self.1 - 1),
+            _ => unreachable!()
+        }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Anchor {
@@ -13,7 +36,7 @@ pub struct Anchor {
 }
 
 impl Anchor {
-    const START: Self = Self { idx: (0, 0), op: Op::START, r: 0, s: 0 };
+    const START: Self = Self { idx: Idx(0, 0), op: Op::START, r: 0, s: 0 };
 
     fn from(idx: Idx, op: Op, s: char, r: char) -> Self {
         Anchor { idx, op, s: s as u8, r: r as u8 }
@@ -139,7 +162,7 @@ impl IdxIncrementer {
     const START: Self = Self { r_inc: 0, s_inc: 0 };
 
     fn with(&mut self, s: char, r: char) -> Idx {
-        (
+        Idx(
             Self::with_char(&mut self.s_inc, s),
             Self::with_char(&mut self.r_inc, r)
         )
@@ -152,4 +175,3 @@ impl IdxIncrementer {
         *i
     }
 }
-

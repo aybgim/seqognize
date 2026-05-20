@@ -1,9 +1,11 @@
-use crate::config::AlignmentConfig;
-use crate::aligner::{Aligner};
-use crate::alignment::{Alignment, AlignmentBuilder};
-use crate::matrix::{Matrix, Idx, AlignmentError};
-use crate::{matrix};
-use crate::element::{Score, Element, Op};
+use crate::aligner::{Aligner, AlignmentError};
+use crate::alignment::{Alignment, AlignmentBuilder, Idx};
+use crate::config::{AlignmentConfig, Score};
+use crate::alignment::Op;
+use crate::aligner::AlignmentError::SequenceTooLong;
+
+use wide::*;
+use std::convert::TryFrom;
 
 pub struct NtAlignmentConfig {
     pub match_score: Score,
@@ -37,229 +39,280 @@ impl AlignmentConfig for NtAlignmentConfig {
     fn get_substitution_score(&self, _pos: (usize, usize), s: u8, r: u8) -> Score {
         if s == r { self.match_score } else { self.mismatch_penalty }
     }
+    
+    #[inline(always)]
+    fn get_substitution_score_v(&self, _pos: (usize, usize), subjects: i16x8, reference: u8) -> i16x8 {
+        let v_ref = i16x8::from(reference as i16);
+        let v_is_match = subjects.cmp_eq(v_ref);
+        v_is_match.blend(i16x8::from(self.match_score), i16x8::from(self.mismatch_penalty))
+    }
+
     fn get_subject_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.subject_gap_penalty
     }
+    #[inline(always)]
     fn get_reference_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.reference_gap_penalty
     }
+
     fn get_max_reference_size(&self) -> usize {
         self.max_reference_size
     }
+
     fn get_max_subject_size(&self) -> usize {
         self.max_subject_size
     }
 }
 
-pub struct GlobalNtAligner {
-    pub config: NtAlignmentConfig,
+pub struct GlobalNtAligner<C: AlignmentConfig> {
+    pub config: C,
     pub reference: Vec<u8>,
     pub top_row_scores: Vec<Score>,
     pub top_row_ops: Vec<Op>,
+    pub scores: [Vec<i16x8>; 2],
+    pub ops: Vec<i16x8>,
 }
 
-impl GlobalNtAligner {
-    pub fn new(config: NtAlignmentConfig, reference: Vec<u8>) -> Self {
+impl<C: AlignmentConfig> GlobalNtAligner<C> {
+    /// Creates a new `GlobalNtAligner` with the given configuration and reference sequence.
+    ///
+    /// # Arguments
+    /// * `config` - The alignment configuration (scoring, size limits).
+    /// * `reference` - The fixed reference sequence to align against.
+    ///
+    /// # Returns
+    /// `Ok(GlobalNtAligner)` if successful, or `Err(AlignmentError::SequenceTooLong)` if the reference sequence exceeds the maximum allowed size.
+    pub fn new(config: C, reference: Vec<u8>) -> Result<Self, AlignmentError> {
+        if reference.len() > config.get_max_reference_size() {
+            return Err(AlignmentError::SequenceTooLong);
+        }
+
         let ncols = reference.len() + 1;
         let mut top_row_scores = vec![0; ncols];
         let mut top_row_ops = vec![Op::START; ncols];
-        
-        // Only pre-calculate if within safe limits to avoid i16 overflow
-        if reference.len() <= config.get_max_reference_size() {
-            let mut acc = 0;
-            for col in 1..ncols {
-                acc += config.get_subject_gap_opening_penalty(col - 1);
-                top_row_scores[col] = acc;
-                top_row_ops[col] = Op::DELETE;
-            }
+
+        let mut acc = 0;
+        for col in 1..ncols {
+            acc += config.get_subject_gap_opening_penalty(col - 1);
+            top_row_scores[col] = acc;
+            top_row_ops[col] = Op::DELETE;
         }
 
-        GlobalNtAligner {
+        Ok(GlobalNtAligner {
             config,
             reference,
             top_row_scores,
             top_row_ops,
-        }
+            scores: [Vec::new(), Vec::new()],
+            ops: Vec::new(),
+        })
     }
 }
 
-impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
-    fn reference(&self) -> &[u8] {
-        &self.reference
+impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
+    /// Aligns a single subject sequence against the reference.
+    fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
+        let results = self.align_batch(&[subject]);
+        results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
     }
 
-    fn check_sizes(&self, subject_len: usize, reference_len: usize) -> Result<(), AlignmentError> {
-        if subject_len > self.config.get_max_subject_size() || reference_len > self.config.get_max_reference_size() {
-            return Err(AlignmentError::SequenceTooLong);
+    /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
+    ///
+    /// This method orchestrates the high-performance alignment pipeline by:
+    /// 1. Grouping subjects into chunks that match the CPU's SIMD width (8 for `i16x8`).
+    /// 2. Reusing stateful memory buffers to eliminate heap allocation overhead.
+    /// 3. Executing a vectorized Needleman-Wunsch fill phase for each chunk.
+    /// 4. Performing individual scalar tracebacks to reconstruct the optimal paths.
+    ///
+    /// # Arguments
+    /// * `subjects` - A slice of nucleotide sequences to be aligned against the reference.
+    ///
+    /// # Returns
+    /// A `Vec` containing the results (Alignment or Error) for each input sequence in order.
+    fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>> {
+        let n_subjects = subjects.len();
+        if n_subjects == 0 { return Vec::new(); }
+
+        let mut all_results = Vec::with_capacity(n_subjects);
+        let ref_len = self.reference.len();
+        let ncols = ref_len + 1;
+
+        for chunk_idx in (0..n_subjects).step_by(8) {
+            let chunk_end = (chunk_idx + 8).min(n_subjects);
+            let chunk_subjects = &subjects[chunk_idx..chunk_end];
+
+            let max_sub_len = chunk_subjects.iter().map(|s| s.len()).max().unwrap_or(0);
+            let nrows = max_sub_len + 1;
+
+            self.prepare_batch_buffers(nrows, ncols);
+            self.fill_first_row(ncols);
+            let final_scores = self.fill_matrix(chunk_subjects, nrows, ncols);
+            self.perform_tracebacks(chunk_subjects, final_scores, ncols, &mut all_results);
         }
-        Ok(())
+        all_results
+    }
+}
+
+impl<C: AlignmentConfig> GlobalNtAligner<C> {
+    /// Resizes internal buffers to accommodate the required number of rows and columns.
+    ///
+    /// Reuses existing allocations to minimize heap churn during batch processing.
+    fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
+        if self.scores[0].len() < ncols {
+            self.scores[0].resize(ncols, i16x8::ZERO);
+            self.scores[1].resize(ncols, i16x8::ZERO);
+        }
+        if self.ops.len() < nrows * ncols {
+            self.ops.resize(nrows * ncols, i16x8::ZERO);
+        }
     }
 
-    fn fill_top_row(&self, mtx: &mut Matrix) {
-        let ncols = mtx.ncols();
-        mtx.scores[0].copy_from_slice(&self.top_row_scores);
-        mtx.ops[0..ncols].copy_from_slice(&self.top_row_ops);
+    /// Initializes the first row of the dynamic programming matrix.
+    fn fill_first_row(&mut self, ncols: usize) {
+        for col in 0..ncols {
+            self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
+            self.ops[col] = i16x8::from(self.top_row_ops[col] as i16);
+        }
     }
 
-    fn fill_left_column(&self, _mtx: &mut Matrix) {
-        // In row recycling, we update column 0 of EVERY row during the fill loop.
-        // But for row 0 initialization, we already did it in fill_top_row.
-    }
-
-    fn fill(&self, mtx: &mut Matrix, subject: &[u8], reference: &[u8]) {
-        let nrows = mtx.nrows();
-        let ncols = mtx.ncols();
+    /// Executes the vectorized Needleman-Wunsch fill phase for a batch of sequences.
+    ///
+    /// # Returns
+    /// An array containing the final alignment scores for each lane in the SIMD vector.
+    fn fill_matrix(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
+        let mut final_scores = [0i16; 8];
 
         for row in 1..nrows {
-            let curr = row % 2;
-            let prev = (row - 1) % 2;
-            let s = subject[row - 1];
-
-            // Initialize first column of the current row
-            let acc_ref = mtx.scores[prev][0] + self.config.get_reference_gap_opening_penalty(row - 1);
-            mtx.scores[curr][0] = acc_ref;
-            mtx.ops[row * ncols] = Op::INSERT;
-
+            let v_sub_bases = self.gather_subject_bases(chunk_subjects, row);
+            let v_ref_gap = i16x8::from(self.config.get_reference_gap_opening_penalty(row - 1));
+            self.compute_first_col(row, v_ref_gap, ncols);
             for col in 1..ncols {
-                let r = reference[col - 1];
-                
-                let score_match = mtx.scores[prev][col - 1] +
-                    self.config.get_substitution_score((row, col), s, r);
-                let score_insert = mtx.scores[prev][col] +
-                    self.config.get_reference_gap_opening_penalty(row - 1);
-                let score_delete = mtx.scores[curr][col - 1] +
-                    self.config.get_subject_gap_opening_penalty(col - 1);
+                self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap, ncols);
+            }
+            self.capture_finished_scores(chunk_subjects, row, &mut final_scores);
+        }
 
-                let (score, op) = if score_match >= score_insert && score_match >= score_delete {
-                    (score_match, Op::MATCH)
-                } else if score_insert >= score_delete {
-                    (score_insert, Op::INSERT)
-                } else {
-                    (score_delete, Op::DELETE)
-                };
+        self.handle_empty_subjects(chunk_subjects, &mut final_scores);
+        final_scores
+    }
 
-                mtx.scores[curr][col] = score;
-                mtx.ops[row * ncols + col] = op;
+    /// Gathers nucleotide bases from the current row for all subjects in the batch into a SIMD vector.
+    #[inline(always)]
+    fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> i16x8 {
+        let mut sub_bases = [0i16; 8];
+        for (i, sub) in chunk_subjects.iter().enumerate() {
+            if row <= sub.len() {
+                sub_bases[i] = sub[row - 1] as i16;
+            }
+        }
+        i16x8::from(sub_bases)
+    }
+
+    /// Initialize column 0 for this row
+    #[inline(always)]
+    fn compute_first_col(&mut self, row: usize, v_ref_gap: i16x8, ncols: usize) {
+        let curr = row % 2;
+        let prev = (row - 1) % 2;
+        self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
+        self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
+    }
+
+    /// Performs vectorized cell computation for a specific row and column.
+    #[inline(always)]
+    fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: i16x8, v_ref_gap: i16x8, ncols: usize) {
+        let curr = row % 2;
+        let prev = (row - 1) % 2;
+        let r = self.reference[col - 1];
+
+        // Use the vectorized interface method to support position-specific scores efficiently.
+        let v_sub_score = self.config.get_substitution_score_v((row, col), v_sub_bases, r);
+
+        // Recurrence: NW(i, j) = max(diag + substitution, up + gap, left + gap)
+        let v_score_match = self.scores[prev][col - 1] + v_sub_score;
+        let v_sub_gap = i16x8::from(self.config.get_subject_gap_opening_penalty(col - 1));
+
+        let v_score_insert = self.scores[prev][col] + v_ref_gap;
+        let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
+
+        let v_max_score = v_score_match.max(v_score_insert).max(v_score_delete);
+        
+        // Traceback Encoding: Store the winning operation in each lane.
+        let mask_match = v_max_score.cmp_eq(v_score_match);
+        let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
+
+        let v_ops = mask_match.blend(i16x8::from(Op::MATCH as i16), 
+                        mask_insert.blend(i16x8::from(Op::INSERT as i16), 
+                                        i16x8::from(Op::DELETE as i16)));
+
+        self.scores[curr][col] = v_max_score;
+        self.ops[row * ncols + col] = v_ops;
+    }
+
+    /// Captures the scores for sequences that have reached their full length at the current row.
+    #[inline(always)]
+    fn capture_finished_scores(&self, chunk_subjects: &[&[u8]], row: usize, final_scores: &mut [i16; 8]) {
+        let curr = row % 2;
+        let ref_len = self.reference.len();
+        for (i, sub) in chunk_subjects.iter().enumerate() {
+            if row == sub.len() {
+                let row_scores: [i16; 8] = self.scores[curr][ref_len].into();
+                final_scores[i] = row_scores[i];
             }
         }
     }
 
-    fn end_idx(&self, mtx: &Matrix) -> Idx {
-        (mtx.nrows() - 1, mtx.ncols() - 1)
-    }
-
-    fn trace_back(&self, mtx: &Matrix, end_index: Idx, subject: &[u8], reference: &[u8]) -> Alignment {
-        let mut builder = AlignmentBuilder::new(subject, reference);
-        let mut cursor = end_index;
-        while cursor != (0, 0) {
-            let element = mtx.get(cursor);
-            builder.take(element.op, cursor);
-            cursor = matrix::move_back(&element, cursor);
+    /// Handles sequences with zero length to ensure they get correct gap-only alignment scores.
+    #[inline(always)]
+    fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [i16; 8]) {
+        let ref_len = self.reference.len();
+        for (i, sub) in chunk_subjects.iter().enumerate() {
+            if sub.len() == 0 {
+                let row0_scores: [i16; 8] = self.scores[0][ref_len].into();
+                final_scores[i] = row0_scores[i];
+            }
         }
-        builder.take(Op::START, cursor);
-        // build() expects the final score of the entire alignment
-        builder.build(mtx.scores[end_index.0 % 2][end_index.1])
     }
-}
 
-pub fn insertion(score: Score) -> Element {
-    Element { op: Op::INSERT, score }
-}
+    /// Performs scalar traceback for each sequence in the batch to reconstruct the alignment paths.
+    fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Result<Alignment, AlignmentError>>) {
+        let ref_len = self.reference.len();
+        for i in 0..chunk_subjects.len() {
+            let sub = chunk_subjects[i];
+            if sub.len() > self.config.get_max_subject_size() {
+                all_results.push(Err(SequenceTooLong));
+            }
+            let mut builder = AlignmentBuilder::new(sub, &self.reference);
+            let mut cursor = Idx(sub.len(), ref_len);
+            while cursor != Idx(0, 0) {
+                let l_idx = cursor.0 * ncols + cursor.1;
+                let op = self.to_op(i, l_idx);
+                builder.take(op, cursor);
+                cursor = cursor.move_back(op);
+            }
+            builder.take(Op::START, cursor);
+            let alignment = builder.build(final_scores[i]);
+            all_results.push(Ok(alignment));
+        }
+    }
 
-pub fn deletion(score: Score) -> Element {
-    Element { op: Op::DELETE, score }
-}
-
-pub fn substitution(score: Score) -> Element {
-    Element { op: Op::MATCH, score }
+    #[inline(always)]
+    fn to_op(&self, i: usize, l_idx: usize) -> Op {
+        let ops_simd: [i16; 8] = self.ops[l_idx].into();
+        Op::try_from(ops_simd[i] as u8).expect("Invalid Op byte!")
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::nt_aligner::{GlobalNtAligner, NtAlignmentConfig, deletion, insertion, substitution};
-    use crate::aligner::Aligner;
-    use crate::matrix;
-    use crate::matrix::AlignmentError;
+    use crate::aligner::{Aligner, AlignmentError};
     use crate::alignment::Alignment;
-    use crate::element::{Score, Element};
+    use crate::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 
-    fn aligner(reference: &[u8]) -> GlobalNtAligner {
+    fn aligner(reference: &[u8]) -> GlobalNtAligner<NtAlignmentConfig> {
         GlobalNtAligner::new(
             NtAlignmentConfig::new(1, -1, -1, -1),
             reference.to_vec()
-        )
-    }
-
-    #[test]
-    fn test_fill_top_row() {
-        let mut mtx = matrix::of(2, 3);
-        aligner(b"AA").fill_top_row(&mut mtx);
-        assert_eq!(
-            mtx.get((0, 0)),
-            Element::default()
-        );
-        for i in 1..3 {
-            assert_eq!(
-                mtx.get((0, i)),
-                deletion(-(i as Score))
-            );
-        }
-    }
-
-    #[test]
-    fn test_fill_with_match() {
-        let mut mtx = matrix::from_elements(
-            [
-                [Element::default(), deletion(-1)],
-                [insertion(-1), substitution(0)]
-            ]
-        );
-        aligner(b"A").fill(&mut mtx, b"A", b"A");
-        assert_eq!(
-            mtx.get((1, 1)),
-            substitution(1)
-        );
-    }
-
-    #[test]
-    fn test_trace_back_snp() {
-        let mtx = matrix::from_elements(
-            [
-                [Element::default(), deletion(-1)],
-                [insertion(-1), substitution(1)]
-            ]
-        );
-        assert_eq!(
-            aligner(b"A").trace_back(&mtx, (1, 1), b"A", b"A"),
-            Alignment::from("A", "A", 1)
-        );
-    }
-
-    #[test]
-    fn test_trace_back_insertion() {
-        let mtx = matrix::from_elements(
-            [
-                [Element::default()],
-                [insertion(-1)]
-            ]
-        );
-        assert_eq!(
-            aligner(b"").trace_back(&mtx, (1, 0), &[b'A'], &[]),
-            Alignment::from("A", "_", -1)
-        );
-    }
-
-    #[test]
-    fn test_trace_back_deletion() {
-        let mtx = matrix::from_elements(
-            [
-                [Element::default(), deletion(-1)]
-            ]
-        );
-        assert_eq!(
-            aligner(b"A").trace_back(&mtx, (0, 1), &[], &[b'A']),
-            Alignment::from("_", "A", -1)
-        );
+        ).expect("Failed to create aligner")
     }
 
     #[test]
@@ -384,7 +437,20 @@ mod tests {
     #[test]
     fn test_oversize_reference() {
         let long_seq = vec![b'A'; 40000];
-        let result = aligner(&long_seq).align(b"A");
-        assert_eq!(result, Err(AlignmentError::SequenceTooLong));
+        let result = GlobalNtAligner::new(
+            NtAlignmentConfig::new(1, -1, -1, -1),
+            long_seq
+        );
+        assert!(matches!(result, Err(AlignmentError::SequenceTooLong)));
+    }
+
+    #[test]
+    fn test_batch_alignment() {
+        let mut al = aligner(b"AGCT");
+        let subjects = vec![b"AGCT".as_slice(), b"AGAT".as_slice(), b"AG_T".as_slice()];
+        let results = al.align_batch(&subjects);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].as_ref().expect("Alignment 0 failed").score, 4);
+        assert_eq!(results[1].as_ref().expect("Alignment 1 failed").score, 2);
     }
 }

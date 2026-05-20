@@ -1,33 +1,24 @@
+use std::fmt;
 use crate::alignment::Alignment;
-use crate::config::{AlignmentConfig};
-use crate::matrix::{Matrix, Idx, AlignmentError};
-use crate::matrix;
+use crate::config::AlignmentConfig;
+
+#[derive(Debug, PartialEq)]
+pub enum AlignmentError {
+    SequenceTooLong,
+}
+
+impl fmt::Display for AlignmentError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AlignmentError::SequenceTooLong => write!(f, "Sequences are too long for i16 score range"),
+        }
+    }
+}
 
 pub trait Aligner<C>
     where C: AlignmentConfig {
 
-    fn align(&self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
-        let reference = self.reference();
-        self.check_sizes(subject.len(), reference.len())?;
-        let mut mtx = matrix::of(subject.len() + 1, reference.len() + 1);
-        self.fill_top_row(&mut mtx);
-        self.fill_left_column(&mut mtx);
-        self.fill(&mut mtx, subject, reference);
-        let end_idx: Idx = self.end_idx(&mtx);
-        Ok(self.trace_back(&mtx, end_idx, &subject, &reference))
-    }
+    fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError>;
 
-    fn reference(&self) -> &[u8];
-
-    fn check_sizes(&self, subject_len: usize, reference_len: usize) -> Result<(), AlignmentError>;
-
-    fn fill_top_row(&self, mtx: &mut Matrix);
-
-    fn fill_left_column(&self, mtx: &mut Matrix);
-
-    fn fill(&self, mtx: &mut Matrix, subject: &[u8], reference: &[u8]);
-
-    fn end_idx(&self, mtx: &Matrix) -> Idx;
-
-    fn trace_back(&self, mtx: &Matrix, end_index: Idx, subject: &[u8], reference: &[u8]) -> Alignment;
+    fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>>;
 }

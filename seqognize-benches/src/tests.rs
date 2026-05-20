@@ -1,4 +1,4 @@
-use seqognize::element::Score;
+use seqognize::config::Score;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
@@ -39,16 +39,22 @@ mod tests {
         let test_suite = read_tests();
         let reference = test_suite.reference.as_bytes();
 
-        let aligner: GlobalNtAligner = GlobalNtAligner::new(
+        let mut aligner = GlobalNtAligner::new(
             NtAlignmentConfig::new(1, -1, -1, -1),
             reference.to_vec()
-        );
+        ).expect("Failed to create aligner");
 
-        test_suite.test_cases.iter().for_each(|test| {
-            let sequence = test.sequence.as_bytes();
-            let alignment = aligner.align(&sequence).expect("Alignment failed during test");
+        let mutant_sequences: Vec<&[u8]> = test_suite.test_cases.iter()
+            .map(|t| t.sequence.as_bytes())
+            .collect();
+
+        let results = aligner.align_batch(&mutant_sequences);
+
+        for (i, result) in results.into_iter().enumerate() {
+            let test = &test_suite.test_cases[i];
+            let alignment = result.expect("Alignment failed during test");
             assert_eq!(test.score, alignment.score);
             assert_eq!(test.aligned_sequences, alignment.aligned_sequences());
-        });
+        }
     }
 }

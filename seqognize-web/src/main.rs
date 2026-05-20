@@ -6,7 +6,7 @@ use yew::services::{DialogService};
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use seqognize::aligner::Aligner;
 use std::num::ParseIntError;
-use seqognize::element::Score;
+use seqognize::config::Score;
 
 struct Model {
     reference: String,
@@ -176,7 +176,7 @@ impl Model {
 
     fn align(&mut self) -> Result<AlignmentResult, ParseIntError> {
         let config = self.config()?;
-        let aligner = GlobalNtAligner::new(config, self.reference.as_bytes().to_vec());
+        let mut aligner = GlobalNtAligner::new(config, self.reference.as_bytes().to_vec()).expect("Reference sequence too long.");
         let alignment = match aligner.align(
             &self.subject.as_bytes(),
         ) {

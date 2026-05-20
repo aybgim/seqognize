@@ -6,16 +6,9 @@ use crate::matrix;
 pub trait Aligner<C>
     where C: AlignmentConfig {
 
-    fn align(&self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
-        let reference = self.reference();
-        self.check_sizes(subject.len(), reference.len())?;
-        let mut mtx = matrix::of(subject.len() + 1, reference.len() + 1);
-        self.fill_top_row(&mut mtx);
-        self.fill_left_column(&mut mtx);
-        self.fill(&mut mtx, subject, reference);
-        let end_idx: Idx = self.end_idx(&mtx);
-        Ok(self.trace_back(&mtx, end_idx, &subject, &reference))
-    }
+    fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError>;
+
+    fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>>;
 
     fn reference(&self) -> &[u8];
 

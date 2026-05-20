@@ -130,8 +130,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             let ref_gap_v = i16x8::from(self.config.reference_gap_penalty);
             let sub_gap_v = i16x8::from(self.config.subject_gap_penalty);
 
-            // Active masks for varying lengths
-            let mut active_masks = [i16x8::ZERO; 1]; // We don't strictly need a mask if we just align dummy data, but good for safety.
+            let mut final_scores = [0i16; 8];
             
             for row in 1..nrows {
                 let curr = row % 2;
@@ -172,6 +171,22 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                     self.scores[curr][col] = v_max_score;
                     self.ops[row * ncols + col] = v_ops;
                 }
+
+                // If any sequence finishes at this row, capture its final score from the last column
+                for (i, sub) in chunk_subjects.iter().enumerate() {
+                    if row == sub.len() {
+                        let row_scores: [i16; 8] = self.scores[curr][ref_len].into();
+                        final_scores[i] = row_scores[i];
+                    }
+                }
+            }
+
+            // Handle cases where subject length is 0 (final score is from row 0)
+            for (i, sub) in chunk_subjects.iter().enumerate() {
+                if sub.len() == 0 {
+                    let row0_scores: [i16; 8] = self.scores[0][ref_len].into();
+                    final_scores[i] = row0_scores[i];
+                }
             }
 
             // Extract results and perform traceback
@@ -179,9 +194,6 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 let sub = chunk_subjects[i];
                 let end_idx = (sub.len(), ref_len);
                 
-                // Build a dummy matrix for traceback (transposing from i16x8 back to standard layout)
-                // This is suboptimal but allows reusing existing traceback logic.
-                // For antibodies, traceback is tiny compared to fill.
                 let mut mtx = Matrix::of(sub.len() + 1, ref_len + 1);
                 for r in 0..=sub.len() {
                     for c in 0..=ref_len {
@@ -190,8 +202,6 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                         mtx.set_op(r, c, unsafe { std::mem::transmute(ops_simd[i] as u8) });
                     }
                 }
-                let final_scores_simd: [i16; 8] = self.scores[sub.len() % 2][ref_len].into();
-                let final_score = final_scores_simd[i];
 
                 let mut builder = AlignmentBuilder::new(sub, &self.reference);
                 let mut cursor = end_idx;
@@ -201,7 +211,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                     cursor = matrix::move_back_op(op, cursor);
                 }
                 builder.take(Op::START, cursor);
-                all_results.push(Ok(builder.build(final_score)));
+                all_results.push(Ok(builder.build(final_scores[i])));
             }
         }
         all_results

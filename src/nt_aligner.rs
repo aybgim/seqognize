@@ -240,9 +240,14 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let mask_match = v_max_score.cmp_eq(v_score_match);
         let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
 
-        let v_ops = mask_match.blend(SimdI16::from(Op::MATCH as i16), 
-                        mask_insert.blend(SimdI16::from(Op::INSERT as i16), 
-                                        SimdI16::from(Op::DELETE as i16)));
+        // Option A: Clean alignment formatting
+        let v_ops = mask_match.blend(
+            SimdI16::from(Op::MATCH as i16),
+            mask_insert.blend(
+                SimdI16::from(Op::INSERT as i16),
+                SimdI16::from(Op::DELETE as i16),
+            ),
+        );
 
         self.scores[curr][col] = v_max_score;
         self.ops[row * ncols + col] = v_ops;

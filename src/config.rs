@@ -1,5 +1,6 @@
-use crate::element::Score;
 use wide::i16x8;
+
+pub type Score = i16;
 
 pub trait AlignmentConfig {
     fn get_substitution_score(&self, pos: (usize, usize), s: u8, r: u8) -> Score;

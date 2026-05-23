@@ -1,4 +1,4 @@
-use seqognize::element::Score;
+use seqognize::config::Score;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;

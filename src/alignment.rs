@@ -1,8 +1,27 @@
-use crate::element::{Score, Op};
-use crate::matrix::Idx;
 use core::iter;
+use crate::config::Score;
 
 pub const GAP: char = '_';
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Op {
+    START,
+    INSERT,
+    MATCH,
+    DELETE,
+}
+
+pub type Idx = (usize, usize);
+
+pub fn move_back_op(op: Op, position: Idx) -> Idx {
+    let (row, column) = position;
+    match op {
+        Op::MATCH => (row - 1, column - 1),
+        Op::INSERT => (row - 1, column),
+        Op::DELETE => (row, column - 1),
+        _ => unreachable!()
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Anchor {
@@ -152,4 +171,3 @@ impl IdxIncrementer {
         *i
     }
 }
-

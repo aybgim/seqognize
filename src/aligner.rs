@@ -1,6 +1,19 @@
+use std::fmt;
 use crate::alignment::Alignment;
 use crate::config::AlignmentConfig;
-use crate::matrix::AlignmentError;
+
+#[derive(Debug, PartialEq)]
+pub enum AlignmentError {
+    SequenceTooLong,
+}
+
+impl fmt::Display for AlignmentError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AlignmentError::SequenceTooLong => write!(f, "Sequences are too long for i16 score range"),
+        }
+    }
+}
 
 pub trait Aligner<C>
     where C: AlignmentConfig {

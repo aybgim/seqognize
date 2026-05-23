@@ -6,7 +6,7 @@ use yew::services::{DialogService};
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use seqognize::aligner::Aligner;
 use std::num::ParseIntError;
-use seqognize::element::Score;
+use seqognize::config::Score;
 
 struct Model {
     reference: String,

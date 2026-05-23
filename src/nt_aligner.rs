@@ -1,9 +1,7 @@
-use crate::aligner::Aligner;
-use crate::alignment::{Alignment, AlignmentBuilder};
-use crate::config::AlignmentConfig;
-use crate::element::{Element, Op, Score};
-use crate::matrix::AlignmentError;
-use crate::matrix;
+use crate::aligner::{Aligner, AlignmentError};
+use crate::alignment::{move_back_op, Alignment, AlignmentBuilder};
+use crate::config::{AlignmentConfig, Score};
+use crate::alignment::Op;
 use wide::*;
 
 pub struct NtAlignmentConfig {
@@ -219,7 +217,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
                 let ops_simd: [i16; 8] = self.ops[l_idx].into();
                 let op: Op = unsafe { std::mem::transmute(ops_simd[i] as u8) };
                 builder.take(op, cursor);
-                cursor = matrix::move_back_op(op, cursor);
+                cursor = move_back_op(op, cursor);
             }
             builder.take(Op::START, cursor);
             all_results.push(Ok(builder.build(final_scores[i])));
@@ -275,18 +273,6 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
         }
         Ok(())
     }
-}
-
-pub fn insertion(score: Score) -> Element {
-    Element { op: Op::INSERT, score }
-}
-
-pub fn deletion(score: Score) -> Element {
-    Element { op: Op::DELETE, score }
-}
-
-pub fn substitution(score: Score) -> Element {
-    Element { op: Op::MATCH, score }
 }
 
 #[cfg(test)]

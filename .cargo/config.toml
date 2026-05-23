@@ -1,0 +1,3 @@
+[build]
+# Forces the compiler to use your local CPU's vector instructions
+rustflags = ["-C", "target-cpu=native"]

@@ -1,11 +1,11 @@
 use crate::aligner::{Aligner, AlignmentError};
 use crate::alignment::{Alignment, AlignmentBuilder, Idx};
-use crate::config::{AlignmentConfig, Score};
+use crate::config::{AlignmentConfig, Score, SimdArray, SimdI16, SIMD_ZERO_ARRAY};
 use crate::alignment::Op;
 use crate::aligner::AlignmentError::SequenceTooLong;
 
-use wide::*;
 use std::convert::TryFrom;
+use wide::CmpEq;
 
 pub struct NtAlignmentConfig {
     pub match_score: Score,
@@ -41,10 +41,10 @@ impl AlignmentConfig for NtAlignmentConfig {
     }
     
     #[inline(always)]
-    fn get_substitution_score_v(&self, _pos: (usize, usize), subjects: i16x8, reference: u8) -> i16x8 {
-        let v_ref = i16x8::from(reference as i16);
+    fn get_substitution_score_v(&self, _pos: (usize, usize), subjects: SimdI16, reference: u8) -> SimdI16 {
+        let v_ref = SimdI16::from(reference as i16);
         let v_is_match = subjects.cmp_eq(v_ref);
-        v_is_match.blend(i16x8::from(self.match_score), i16x8::from(self.mismatch_penalty))
+        v_is_match.blend(SimdI16::from(self.match_score), SimdI16::from(self.mismatch_penalty))
     }
 
     fn get_subject_gap_opening_penalty(&self, _pos: usize) -> Score {
@@ -69,8 +69,8 @@ pub struct GlobalNtAligner<C: AlignmentConfig> {
     pub reference: Vec<u8>,
     pub top_row_scores: Vec<Score>,
     pub top_row_ops: Vec<Op>,
-    pub scores: [Vec<i16x8>; 2],
-    pub ops: Vec<i16x8>,
+    pub scores: [Vec<SimdI16>; 2],
+    pub ops: Vec<SimdI16>,
 }
 
 impl<C: AlignmentConfig> GlobalNtAligner<C> {
@@ -119,7 +119,7 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
     /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
     ///
     /// This method orchestrates the high-performance alignment pipeline by:
-    /// 1. Grouping subjects into chunks that match the CPU's SIMD width (8 for `i16x8`).
+    /// 1. Grouping subjects into chunks that match the CPU's SIMD width.
     /// 2. Reusing stateful memory buffers to eliminate heap allocation overhead.
     /// 3. Executing a vectorized Needleman-Wunsch fill phase for each chunk.
     /// 4. Performing individual scalar tracebacks to reconstruct the optimal paths.
@@ -159,19 +159,19 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// Reuses existing allocations to minimize heap churn during batch processing.
     fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
         if self.scores[0].len() < ncols {
-            self.scores[0].resize(ncols, i16x8::ZERO);
-            self.scores[1].resize(ncols, i16x8::ZERO);
+            self.scores[0].resize(ncols, SimdI16::ZERO);
+            self.scores[1].resize(ncols, SimdI16::ZERO);
         }
         if self.ops.len() < nrows * ncols {
-            self.ops.resize(nrows * ncols, i16x8::ZERO);
+            self.ops.resize(nrows * ncols, SimdI16::ZERO);
         }
     }
 
     /// Initializes the first row of the dynamic programming matrix.
     fn fill_first_row(&mut self, ncols: usize) {
         for col in 0..ncols {
-            self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
-            self.ops[col] = i16x8::from(self.top_row_ops[col] as i16);
+            self.scores[0][col] = SimdI16::from(self.top_row_scores[col]);
+            self.ops[col] = SimdI16::from(self.top_row_ops[col] as i16);
         }
     }
 
@@ -184,7 +184,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
         for row in 1..nrows {
             let v_sub_bases = self.gather_subject_bases(chunk_subjects, row);
-            let v_ref_gap = i16x8::from(self.config.get_reference_gap_opening_penalty(row - 1));
+            let v_ref_gap = SimdI16::from(self.config.get_reference_gap_opening_penalty(row - 1));
             self.compute_first_col(row, v_ref_gap, ncols);
             for col in 1..ncols {
                 self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap, ncols);
@@ -198,28 +198,28 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
     /// Gathers nucleotide bases from the current row for all subjects in the batch into a SIMD vector.
     #[inline(always)]
-    fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> i16x8 {
-        let mut sub_bases = [0i16; 8];
+    fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> SimdI16 {
+        let mut sub_bases = SIMD_ZERO_ARRAY;
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if row <= sub.len() {
                 sub_bases[i] = sub[row - 1] as i16;
             }
         }
-        i16x8::from(sub_bases)
+        SimdI16::from(sub_bases)
     }
 
     /// Initialize column 0 for this row
     #[inline(always)]
-    fn compute_first_col(&mut self, row: usize, v_ref_gap: i16x8, ncols: usize) {
+    fn compute_first_col(&mut self, row: usize, v_ref_gap: SimdI16, ncols: usize) {
         let curr = row % 2;
         let prev = (row - 1) % 2;
         self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
-        self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
+        self.ops[row * ncols] = SimdI16::from(Op::INSERT as i16);
     }
 
     /// Performs vectorized cell computation for a specific row and column.
     #[inline(always)]
-    fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: i16x8, v_ref_gap: i16x8, ncols: usize) {
+    fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: SimdI16, v_ref_gap: SimdI16, ncols: usize) {
         let curr = row % 2;
         let prev = (row - 1) % 2;
         let r = self.reference[col - 1];
@@ -229,7 +229,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
         // Recurrence: NW(i, j) = max(diag + substitution, up + gap, left + gap)
         let v_score_match = self.scores[prev][col - 1] + v_sub_score;
-        let v_sub_gap = i16x8::from(self.config.get_subject_gap_opening_penalty(col - 1));
+        let v_sub_gap = SimdI16::from(self.config.get_subject_gap_opening_penalty(col - 1));
 
         let v_score_insert = self.scores[prev][col] + v_ref_gap;
         let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
@@ -240,9 +240,9 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let mask_match = v_max_score.cmp_eq(v_score_match);
         let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
 
-        let v_ops = mask_match.blend(i16x8::from(Op::MATCH as i16), 
-                        mask_insert.blend(i16x8::from(Op::INSERT as i16), 
-                                        i16x8::from(Op::DELETE as i16)));
+        let v_ops = mask_match.blend(SimdI16::from(Op::MATCH as i16), 
+                        mask_insert.blend(SimdI16::from(Op::INSERT as i16), 
+                                        SimdI16::from(Op::DELETE as i16)));
 
         self.scores[curr][col] = v_max_score;
         self.ops[row * ncols + col] = v_ops;
@@ -255,7 +255,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if row == sub.len() {
-                let row_scores: [i16; 8] = self.scores[curr][ref_len].into();
+                let row_scores: SimdArray = self.scores[curr][ref_len].into();
                 final_scores[i] = row_scores[i];
             }
         }
@@ -267,7 +267,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if sub.len() == 0 {
-                let row0_scores: [i16; 8] = self.scores[0][ref_len].into();
+                let row0_scores: SimdArray = self.scores[0][ref_len].into();
                 final_scores[i] = row0_scores[i];
             }
         }
@@ -295,11 +295,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
-    /// Convert i16x8 to Op
+    /// Convert SimdI16 to Op
     #[inline(always)]
     fn to_op(&self, i: usize, l_idx: usize) -> Op {
-        let ops_simd: [i16; 8] = self.ops[l_idx].into();
-        Op::try_from(ops_simd[i] as u8).expect("Invalid Op byte!")
+        let ops_simd: SimdI16 = self.ops[l_idx].into();
+        Op::try_from(ops_simd.to_array()[i] as u8).expect("Invalid Op byte!")
     }
 }
 

@@ -290,7 +290,8 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
                 cursor = cursor.move_back(op);
             }
             builder.take(Op::START, cursor);
-            all_results.push(Ok(builder.build(final_scores[i])));
+            let alignment = builder.build(final_scores[i]);
+            all_results.push(Ok(alignment));
         }
     }
 

@@ -119,7 +119,7 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
     /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
     ///
     /// This method orchestrates the high-performance alignment pipeline by:
-    /// 1. Grouping subjects into chunks that match the CPU's SIMD width.
+    /// 1. Grouping subjects into chunks that match the CPU's SIMD width (8 or 16).
     /// 2. Reusing stateful memory buffers to eliminate heap allocation overhead.
     /// 3. Executing a vectorized Needleman-Wunsch fill phase for each chunk.
     /// 4. Performing individual scalar tracebacks to reconstruct the optimal paths.

@@ -97,6 +97,108 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             ops: Vec::new(),
         }
     }
+
+    #[inline]
+    fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
+        if self.scores[0].len() < ncols {
+            self.scores[0].resize(ncols, i16x8::ZERO);
+            self.scores[1].resize(ncols, i16x8::ZERO);
+        }
+        if self.ops.len() < nrows * ncols {
+            self.ops.resize(nrows * ncols, i16x8::ZERO);
+        }
+    }
+
+    #[inline]
+    fn initialize_fill(&mut self, ncols: usize) {
+        for col in 0..ncols {
+            self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
+            self.ops[col] = i16x8::from(self.top_row_ops[col] as i16);
+        }
+    }
+
+    #[inline]
+    fn compute_fill(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
+        let ref_len = self.reference.len();
+        let actual_batch_size = chunk_subjects.len();
+        let mut final_scores = [0i16; 8];
+
+        for row in 1..nrows {
+            let curr = row % 2;
+            let prev = (row - 1) % 2;
+
+            let mut sub_bases = [0i16; 8];
+            for (i, sub) in chunk_subjects.iter().enumerate() {
+                if row <= sub.len() {
+                    sub_bases[i] = sub[row - 1] as i16;
+                }
+            }
+            let v_sub_bases = i16x8::from(sub_bases);
+
+            let ref_gap_penalty = self.config.get_reference_gap_opening_penalty(row - 1);
+            let v_ref_gap = i16x8::from(ref_gap_penalty);
+            self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
+            self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
+
+            for col in 1..ncols {
+                let r = self.reference[col - 1];
+                let v_sub_score = self.config.get_substitution_score_v((row, col), v_sub_bases, r);
+
+                let v_score_match = self.scores[prev][col - 1] + v_sub_score;
+                let v_ref_gap = i16x8::from(self.config.get_reference_gap_opening_penalty(row - 1));
+                let v_sub_gap = i16x8::from(self.config.get_subject_gap_opening_penalty(col - 1));
+
+                let v_score_insert = self.scores[prev][col] + v_ref_gap;
+                let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
+
+                let v_max_score = v_score_match.max(v_score_insert.max(v_score_delete));
+                
+                let mask_match = v_max_score.cmp_eq(v_score_match);
+                let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
+
+                let v_ops = mask_match.blend(i16x8::from(Op::MATCH as i16), 
+                                mask_insert.blend(i16x8::from(Op::INSERT as i16), 
+                                                i16x8::from(Op::DELETE as i16)));
+
+                self.scores[curr][col] = v_max_score;
+                self.ops[row * ncols + col] = v_ops;
+            }
+
+            for (i, sub) in chunk_subjects.iter().enumerate() {
+                if row == sub.len() {
+                    let row_scores: [i16; 8] = self.scores[curr][ref_len].into();
+                    final_scores[i] = row_scores[i];
+                }
+            }
+        }
+
+        for (i, sub) in chunk_subjects.iter().enumerate() {
+            if sub.len() == 0 {
+                let row0_scores: [i16; 8] = self.scores[0][ref_len].into();
+                final_scores[i] = row0_scores[i];
+            }
+        }
+        final_scores
+    }
+
+    #[inline]
+    fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Result<Alignment, AlignmentError>>) {
+        let ref_len = self.reference.len();
+        for i in 0..chunk_subjects.len() {
+            let sub = chunk_subjects[i];
+            let mut builder = AlignmentBuilder::new(sub, &self.reference);
+            let mut cursor = (sub.len(), ref_len);
+            while cursor != (0, 0) {
+                let l_idx = cursor.0 * ncols + cursor.1;
+                let ops_simd: [i16; 8] = self.ops[l_idx].into();
+                let op: Op = unsafe { std::mem::transmute(ops_simd[i] as u8) };
+                builder.take(op, cursor);
+                cursor = matrix::move_back_op(op, cursor);
+            }
+            builder.take(Op::START, cursor);
+            all_results.push(Ok(builder.build(final_scores[i])));
+        }
+    }
 }
 
 impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
@@ -105,20 +207,6 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
         results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
     }
 
-    /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
-    ///
-    /// This implementation uses **inter-sequence SIMD vectorization** via the `wide` crate,
-    /// allowing 8 independent alignments to be processed simultaneously in a single CPU instruction stream.
-    /// It also employs **row recycling** to reduce the score matrix memory footprint from $O(N \times M)$
-    /// to $O(M)$, ensuring the "active" scores stay within the L1/L2 caches.
-    ///
-    /// The algorithm follows the **Needleman-Wunsch** global alignment pattern.
-    ///
-    /// # Arguments
-    /// * `subjects` - A slice of byte slices, each representing a nucleotide sequence to be aligned.
-    ///
-    /// # Returns
-    /// A `Vec` of results, where each item is either an `Alignment` or an `AlignmentError`.
     fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>> {
         let n_subjects = subjects.len();
         if n_subjects == 0 { return Vec::new(); }
@@ -127,128 +215,17 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
         let ref_len = self.reference.len();
         let ncols = ref_len + 1;
 
-        // Process subjects in chunks of 8 to match i16x8 SIMD width
         for chunk_idx in (0..n_subjects).step_by(8) {
             let chunk_end = (chunk_idx + 8).min(n_subjects);
             let chunk_subjects = &subjects[chunk_idx..chunk_end];
-            let actual_batch_size = chunk_subjects.len();
 
             let max_sub_len = chunk_subjects.iter().map(|s| s.len()).max().unwrap_or(0);
             let nrows = max_sub_len + 1;
 
-            // Re-use SIMD buffers to avoid expensive heap allocations per batch.
-            // We use two rows of i16x8 scores (current and previous) to keep the active
-            // working set within the L1/L2 caches (Row Recycling).
-            if self.scores[0].len() < ncols {
-                self.scores[0].resize(ncols, i16x8::ZERO);
-                self.scores[1].resize(ncols, i16x8::ZERO);
-            }
-            // The ops buffer stores the directions for all 8 alignments in the batch.
-            if self.ops.len() < nrows * ncols {
-                self.ops.resize(nrows * ncols, i16x8::ZERO);
-            }
-
-            // Fill Top Row: Broadcast the precalculated scalar row-0 scores and ops
-            // into all 8 lanes of the SIMD buffers.
-            for col in 0..ncols {
-                self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
-                self.ops[col] = i16x8::from(self.top_row_ops[col] as i16);
-            }
-
-            let mut final_scores = [0i16; 8];
-            
-            // Vectorized Fill Phase: Iterate through rows (subject bases).
-            // Each cell in the matrix represents the optimal score for the alignment
-            // of the first i bases of a subject and the first j bases of the reference.
-            for row in 1..nrows {
-                let curr = row % 2;
-                let prev = (row - 1) % 2;
-
-                // Transpose: Gather the i-th base of all 8 subjects into one SIMD register.
-                // This enables inter-sequence parallelism using the Needleman-Wunsch recurrence.
-                let mut sub_bases = [0i16; 8];
-                for (i, sub) in chunk_subjects.iter().enumerate() {
-                    if row <= sub.len() {
-                        sub_bases[i] = sub[row - 1] as i16;
-                    }
-                }
-                let v_sub_bases = i16x8::from(sub_bases);
-
-                // Initialize column 0 for this row (Insert state).
-                let ref_gap_penalty = self.config.get_reference_gap_opening_penalty(row - 1);
-                let v_ref_gap = i16x8::from(ref_gap_penalty);
-                let v_acc_ref = self.scores[prev][0] + v_ref_gap;
-                self.scores[curr][0] = v_acc_ref;
-                self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
-
-                // Sweep across the reference bases.
-                for col in 1..ncols {
-                    let r = self.reference[col - 1];
-
-                    // Use the vectorized interface method to support position-specific scores efficiently.
-                    let v_sub_score = self.config.get_substitution_score_v((row, col), v_sub_bases, r);
-
-                    // Recurrence: NW(i, j) = max(diag + substitution, up + gap, left + gap)
-                    let v_score_match = self.scores[prev][col - 1] + v_sub_score;
-                    
-                    // Retrieve gap penalties via the interface
-                    let v_ref_gap = i16x8::from(self.config.get_reference_gap_opening_penalty(row - 1));
-                    let v_sub_gap = i16x8::from(self.config.get_subject_gap_opening_penalty(col - 1));
-
-                    let v_score_insert = self.scores[prev][col] + v_ref_gap;
-                    let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
-
-                    let v_max_score = v_score_match.max(v_score_insert.max(v_score_delete));
-                    
-                    // Traceback Encoding: Store the winning operation in each lane.
-                    let mask_match = v_max_score.cmp_eq(v_score_match);
-                    let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
-
-                    let v_ops = mask_match.blend(i16x8::from(Op::MATCH as i16), 
-                                    mask_insert.blend(i16x8::from(Op::INSERT as i16), 
-                                                    i16x8::from(Op::DELETE as i16)));
-
-                    self.scores[curr][col] = v_max_score;
-                    self.ops[row * ncols + col] = v_ops;
-                }
-
-                // Sequence completion check: If a subject is finished at this row,
-                // capture its final alignment score from the last column.
-                for (i, sub) in chunk_subjects.iter().enumerate() {
-                    if row == sub.len() {
-                        let row_scores: [i16; 8] = self.scores[curr][ref_len].into();
-                        final_scores[i] = row_scores[i];
-                    }
-                }
-            }
-
-            // Handle edge case: empty subject sequences.
-            for (i, sub) in chunk_subjects.iter().enumerate() {
-                if sub.len() == 0 {
-                    let row0_scores: [i16; 8] = self.scores[0][ref_len].into();
-                    final_scores[i] = row0_scores[i];
-                }
-            }
-
-            // Traceback Phase: Reconstruct the optimal alignment path for each sequence.
-            // We read directly from the SIMD 'ops' buffer, extracting one lane at a time.
-            for i in 0..actual_batch_size {
-                let sub = chunk_subjects[i];
-                let end_idx = (sub.len(), ref_len);
-
-                let mut builder = AlignmentBuilder::new(sub, &self.reference);
-                let mut cursor = end_idx;
-                while cursor != (0, 0) {
-                    let l_idx = cursor.0 * ncols + cursor.1;
-                    // Extract the Op for the i-th sequence in the batch.
-                    let ops_simd: [i16; 8] = self.ops[l_idx].into();
-                    let op: Op = unsafe { std::mem::transmute(ops_simd[i] as u8) };
-                    builder.take(op, cursor);
-                    cursor = matrix::move_back_op(op, cursor);
-                }
-                builder.take(Op::START, cursor);
-                all_results.push(Ok(builder.build(final_scores[i])));
-            }
+            self.prepare_batch_buffers(nrows, ncols);
+            self.initialize_fill(ncols);
+            let final_scores = self.compute_fill(chunk_subjects, nrows, ncols);
+            self.perform_tracebacks(chunk_subjects, final_scores, ncols, &mut all_results);
         }
         all_results
     }

@@ -285,14 +285,19 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             let mut cursor = Idx(sub.len(), ref_len);
             while cursor != Idx(0, 0) {
                 let l_idx = cursor.0 * ncols + cursor.1;
-                let ops_simd: [i16; 8] = self.ops[l_idx].into();
-                let op: Op = Op::try_from(ops_simd[i] as u8).expect("Invalid Op byte!");
+                let op = self.to_op(i, l_idx);
                 builder.take(op, cursor);
                 cursor = cursor.move_back(op);
             }
             builder.take(Op::START, cursor);
             all_results.push(Ok(builder.build(final_scores[i])));
         }
+    }
+
+    #[inline(always)]
+    fn to_op(&self, i: usize, l_idx: usize) -> Op {
+        let ops_simd: [i16; 8] = self.ops[l_idx].into();
+        Op::try_from(ops_simd[i] as u8).expect("Invalid Op byte!")
     }
 }
 

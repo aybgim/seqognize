@@ -1,10 +1,11 @@
 use core::iter;
 use crate::config::Score;
+use num_enum::TryFromPrimitive;
 
 pub const GAP: char = '_';
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, TryFromPrimitive)]
 pub enum Op {
     START,
     INSERT,

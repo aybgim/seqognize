@@ -2,8 +2,10 @@ use crate::aligner::{Aligner, AlignmentError};
 use crate::alignment::{Alignment, AlignmentBuilder, Idx};
 use crate::config::{AlignmentConfig, Score};
 use crate::alignment::Op;
-use wide::*;
 use crate::aligner::AlignmentError::SequenceTooLong;
+
+use wide::*;
+use std::convert::TryFrom;
 
 pub struct NtAlignmentConfig {
     pub match_score: Score,
@@ -284,7 +286,8 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             while cursor != Idx(0, 0) {
                 let l_idx = cursor.0 * ncols + cursor.1;
                 let ops_simd: [i16; 8] = self.ops[l_idx].into();
-                let op: Op = unsafe { std::mem::transmute(ops_simd[i] as u8) };
+                // let op: Op = unsafe { std::mem::transmute(ops_simd[i] as u8) };
+                let op: Op = Op::try_from(ops_simd[i] as u8).expect("Invalid Op byte!");
                 builder.take(op, cursor);
                 cursor = cursor.move_back(op);
             }

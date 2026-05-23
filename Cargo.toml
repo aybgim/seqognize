@@ -17,6 +17,7 @@ edition = "2021"
 delegate = "0.12.0"
 clap = { version = "=4.4.18", features = ["derive"] }
 wide = "0.7.4"
+num_enum = "0.7.6"
 
 [dev-dependencies]
 # No dev-dependencies needed in root for now

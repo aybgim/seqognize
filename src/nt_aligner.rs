@@ -144,11 +144,6 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 self.ops[col] = i16x8::from(self.top_row_ops[col] as i16);
             }
 
-            let match_score_v = i16x8::from(self.config.match_score);
-            let mismatch_penalty_v = i16x8::from(self.config.mismatch_penalty);
-            let ref_gap_v = i16x8::from(self.config.reference_gap_penalty);
-            let sub_gap_v = i16x8::from(self.config.subject_gap_penalty);
-
             let mut final_scores = [0i16; 8];
             
             // Vectorized Fill Phase: Iterate through rows (subject bases).
@@ -169,23 +164,33 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 let v_sub_bases = i16x8::from(sub_bases);
 
                 // Initialize column 0 for this row (Insert state).
-                let v_acc_ref = self.scores[prev][0] + ref_gap_v;
+                let ref_gap_penalty = self.config.get_reference_gap_opening_penalty(row - 1);
+                let v_ref_gap = i16x8::from(ref_gap_penalty);
+                let v_acc_ref = self.scores[prev][0] + v_ref_gap;
                 self.scores[curr][0] = v_acc_ref;
                 self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
 
                 // Sweep across the reference bases.
                 for col in 1..ncols {
-                    // Broadcast the single reference base to all 8 SIMD lanes.
-                    let v_ref_base = i16x8::from(self.reference[col - 1] as i16);
-                    
-                    // Branchless SIMD comparison and match/mismatch score selection.
-                    let v_is_match = v_sub_bases.cmp_eq(v_ref_base);
-                    let v_sub_score = v_is_match.blend(match_score_v, mismatch_penalty_v);
+                    let r = self.reference[col - 1];
+
+                    // Call the interface for each subject in the SIMD batch to support position-specific scores
+                    let mut sub_scores = [0i16; 8];
+                    for i in 0..actual_batch_size {
+                        let s = sub_bases[i] as u8;
+                        sub_scores[i] = self.config.get_substitution_score((row, col), s, r);
+                    }
+                    let v_sub_score = i16x8::from(sub_scores);
 
                     // Recurrence: NW(i, j) = max(diag + substitution, up + gap, left + gap)
                     let v_score_match = self.scores[prev][col - 1] + v_sub_score;
-                    let v_score_insert = self.scores[prev][col] + ref_gap_v;
-                    let v_score_delete = self.scores[curr][col - 1] + sub_gap_v;
+                    
+                    // Retrieve gap penalties via the interface
+                    let v_ref_gap = i16x8::from(self.config.get_reference_gap_opening_penalty(row - 1));
+                    let v_sub_gap = i16x8::from(self.config.get_subject_gap_opening_penalty(col - 1));
+
+                    let v_score_insert = self.scores[prev][col] + v_ref_gap;
+                    let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
 
                     let v_max_score = v_score_match.max(v_score_insert.max(v_score_delete));
                     

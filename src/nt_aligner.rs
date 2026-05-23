@@ -229,23 +229,11 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
         all_results
     }
 
-    fn reference(&self) -> &[u8] {
-        &self.reference
-    }
-
     fn check_sizes(&self, subject_len: usize, reference_len: usize) -> Result<(), AlignmentError> {
         if subject_len > self.config.get_max_subject_size() || reference_len > self.config.get_max_reference_size() {
             return Err(AlignmentError::SequenceTooLong);
         }
         Ok(())
-    }
-
-    fn fill_top_row(&self, _mtx: &mut Matrix) {}
-    fn fill_left_column(&self, _mtx: &mut Matrix) {}
-    fn fill(&self, _mtx: &mut Matrix, _subject: &[u8], _reference: &[u8]) {}
-    fn end_idx(&self, _mtx: &Matrix) -> Idx { (0, 0) }
-    fn trace_back(&self, _mtx: &Matrix, _idx: Idx, _s: &[u8], _r: &[u8]) -> Alignment { 
-        Alignment::from("", "", 0) 
     }
 }
 

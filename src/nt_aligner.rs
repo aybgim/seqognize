@@ -143,8 +143,8 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
             let nrows = max_sub_len + 1;
 
             self.prepare_batch_buffers(nrows, ncols);
-            self.initialize_fill(ncols);
-            let final_scores = self.compute_fill(chunk_subjects, nrows, ncols);
+            self.fill_first_row(ncols);
+            let final_scores = self.fill_matrix(chunk_subjects, nrows, ncols);
             self.perform_tracebacks(chunk_subjects, final_scores, ncols, &mut all_results);
         }
         all_results
@@ -166,7 +166,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Initializes the first row of the dynamic programming matrix.
-    fn initialize_fill(&mut self, ncols: usize) {
+    fn fill_first_row(&mut self, ncols: usize) {
         for col in 0..ncols {
             self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
             self.ops[col] = i16x8::from(self.top_row_ops[col] as i16);
@@ -177,7 +177,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     ///
     /// # Returns
     /// An array containing the final alignment scores for each lane in the SIMD vector.
-    fn compute_fill(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
+    fn fill_matrix(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
         let mut final_scores = [0i16; 8];
 
         for row in 1..nrows {

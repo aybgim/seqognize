@@ -91,10 +91,6 @@ pub fn from_elements<const R: usize, const C: usize>(elements: [[Element; C]; R]
     mtx
 }
 
-pub fn move_back(element: &Element, position: Idx) -> Idx {
-    move_back_op(element.op, position)
-}
-
 pub fn move_back_op(op: Op, position: Idx) -> Idx {
     let (row, column) = position;
     match op {

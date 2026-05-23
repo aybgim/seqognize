@@ -207,16 +207,20 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// Computes a single row of the DP matrix using SIMD instructions.
     #[inline(always)]
     fn compute_fill_row(&mut self, row: usize, v_sub_bases: i16x8, v_ref_gap: i16x8, ncols: usize) {
-        let curr = row % 2;
-        let prev = (row - 1) % 2;
-
-        // Initialize column 0 for this row
-        self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
-        self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
+        self.compute_first_col(row, v_ref_gap, ncols);
 
         for col in 1..ncols {
             self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap, ncols);
         }
+    }
+
+    /// Initialize column 0 for this row
+    #[inline(always)]
+    fn compute_first_col(&mut self, row: usize, v_ref_gap: i16x8, ncols: usize) {
+        let curr = row % 2;
+        let prev = (row - 1) % 2;
+        self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
+        self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
     }
 
     /// Performs vectorized cell computation for a specific row and column.

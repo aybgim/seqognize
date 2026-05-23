@@ -166,8 +166,6 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
                         sub_bases[i] = sub[row - 1] as i16;
                     }
                 }
-                let v_sub_bases = i16x8::from(sub_bases);
-
                 // Initialize column 0 for this row (Insert state).
                 let ref_gap_penalty = self.config.get_reference_gap_opening_penalty(row - 1);
                 let v_ref_gap = i16x8::from(ref_gap_penalty);
@@ -177,15 +175,13 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
 
                 // Sweep across the reference bases.
                 for col in 1..ncols {
-                    // Broadcast the single reference base to all 8 SIMD lanes.
-                    let v_ref_base = i16x8::from(self.reference[col - 1] as i16);
-                    
-                    // Call the interface for each subject in the SIMD batch to support position-specific scores.
-                    // Static dispatch (generics) allows the compiler to inline these calls.
+                    let r = self.reference[col - 1];
+
+                    // Call the interface for each subject in the SIMD batch to support position-specific scores
                     let mut sub_scores = [0i16; 8];
                     for i in 0..actual_batch_size {
                         let s = sub_bases[i] as u8;
-                        sub_scores[i] = self.config.get_substitution_score((row, col), s, v_ref_base.to_array()[0] as u8);
+                        sub_scores[i] = self.config.get_substitution_score((row, col), s, r);
                     }
                     let v_sub_score = i16x8::from(sub_scores);
 

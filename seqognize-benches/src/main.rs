@@ -33,7 +33,7 @@ fn main() -> std::io::Result<()> {
     let mut aligner = GlobalNtAligner::new(
         NtAlignmentConfig::new(1, -1, -1, -1),
         reference.clone()
-    );
+    ).expect("Failed to create aligner");
 
     let mut test_cases: Vec<TestCase> = Vec::with_capacity(NUM_TESTS);
 

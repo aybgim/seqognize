@@ -23,7 +23,7 @@ fn nt_alignment_benchmark(c: &mut Criterion) {
     let mut aligner = GlobalNtAligner::new(
         NtAlignmentConfig::new(1, -1, -1, -1),
         reference.to_vec()
-    );
+    ).expect("Failed to create aligner");
 
     let mut group = c.benchmark_group("Alignment");
     group.sample_size(10);

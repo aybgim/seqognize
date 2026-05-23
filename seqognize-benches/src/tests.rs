@@ -42,7 +42,7 @@ mod tests {
         let mut aligner = GlobalNtAligner::new(
             NtAlignmentConfig::new(1, -1, -1, -1),
             reference.to_vec()
-        );
+        ).expect("Failed to create aligner");
 
         let mutant_sequences: Vec<&[u8]> = test_suite.test_cases.iter()
             .map(|t| t.sequence.as_bytes())

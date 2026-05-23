@@ -1,5 +1,5 @@
 use crate::aligner::{Aligner, AlignmentError};
-use crate::alignment::{move_back_op, Alignment, AlignmentBuilder};
+use crate::alignment::{Alignment, AlignmentBuilder, Idx};
 use crate::config::{AlignmentConfig, Score};
 use crate::alignment::Op;
 use wide::*;
@@ -211,13 +211,13 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         for i in 0..chunk_subjects.len() {
             let sub = chunk_subjects[i];
             let mut builder = AlignmentBuilder::new(sub, &self.reference);
-            let mut cursor = (sub.len(), ref_len);
-            while cursor != (0, 0) {
+            let mut cursor = Idx(sub.len(), ref_len);
+            while cursor != Idx(0, 0) {
                 let l_idx = cursor.0 * ncols + cursor.1;
                 let ops_simd: [i16; 8] = self.ops[l_idx].into();
                 let op: Op = unsafe { std::mem::transmute(ops_simd[i] as u8) };
                 builder.take(op, cursor);
-                cursor = move_back_op(op, cursor);
+                cursor = cursor.move_back(op);
             }
             builder.take(Op::START, cursor);
             all_results.push(Ok(builder.build(final_scores[i])));

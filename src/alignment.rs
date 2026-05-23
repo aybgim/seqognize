@@ -11,15 +11,17 @@ pub enum Op {
     DELETE,
 }
 
-pub type Idx = (usize, usize);
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Idx(pub usize, pub usize);
 
-pub fn move_back_op(op: Op, position: Idx) -> Idx {
-    let (row, column) = position;
-    match op {
-        Op::MATCH => (row - 1, column - 1),
-        Op::INSERT => (row - 1, column),
-        Op::DELETE => (row, column - 1),
-        _ => unreachable!()
+impl Idx {
+    pub fn move_back(&self, op: Op) -> Self {
+        match op {
+            Op::MATCH => Idx(self.0 - 1, self.1 - 1),
+            Op::INSERT => Idx(self.0 - 1, self.1),
+            Op::DELETE => Idx(self.0, self.1 - 1),
+            _ => unreachable!()
+        }
     }
 }
 
@@ -32,7 +34,7 @@ pub struct Anchor {
 }
 
 impl Anchor {
-    const START: Self = Self { idx: (0, 0), op: Op::START, r: 0, s: 0 };
+    const START: Self = Self { idx: Idx(0, 0), op: Op::START, r: 0, s: 0 };
 
     fn from(idx: Idx, op: Op, s: char, r: char) -> Self {
         Anchor { idx, op, s: s as u8, r: r as u8 }
@@ -158,7 +160,7 @@ impl IdxIncrementer {
     const START: Self = Self { r_inc: 0, s_inc: 0 };
 
     fn with(&mut self, s: char, r: char) -> Idx {
-        (
+        Idx(
             Self::with_char(&mut self.s_inc, s),
             Self::with_char(&mut self.r_inc, r)
         )

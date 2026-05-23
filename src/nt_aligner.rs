@@ -39,7 +39,7 @@ impl AlignmentConfig for NtAlignmentConfig {
     fn get_substitution_score(&self, _pos: (usize, usize), s: u8, r: u8) -> Score {
         if s == r { self.match_score } else { self.mismatch_penalty }
     }
-    #[inline(always)]
+    // #[inline(always)]
     fn get_subject_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.subject_gap_penalty
     }
@@ -47,11 +47,11 @@ impl AlignmentConfig for NtAlignmentConfig {
     fn get_reference_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.reference_gap_penalty
     }
-    #[inline(always)]
+    // #[inline(always)]
     fn get_max_reference_size(&self) -> usize {
         self.max_reference_size
     }
-    #[inline(always)]
+    // #[inline(always)]
     fn get_max_subject_size(&self) -> usize {
         self.max_subject_size
     }

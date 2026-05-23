@@ -234,7 +234,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {
             let sub = chunk_subjects[i];
-            if (sub.len() > self.config.get_max_subject_size()) {
+            if sub.len() > self.config.get_max_subject_size() {
                 all_results.push(Err(SequenceTooLong));
             }
             let mut builder = AlignmentBuilder::new(sub, &self.reference);

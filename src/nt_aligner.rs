@@ -98,6 +98,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Ensures that the internal SIMD buffers have sufficient capacity for the current batch.
+    ///
+    /// This method resizes the `scores` and `ops` vectors if they are smaller than the 
+    /// required dimensions (`nrows * ncols`). By maintaining these buffers as fields, 
+    /// we avoid the cost of heap allocation on every alignment call.
     fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
         if self.scores[0].len() < ncols {
             self.scores[0].resize(ncols, i16x8::ZERO);
@@ -108,6 +113,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Initializes the first row of the alignment matrix for a new batch.
+    ///
+    /// This method broadcasts the pre-calculated scalar scores and operations for Row 0 
+    /// (the reference gaps) into all 8 lanes of the SIMD buffers.
     fn initialize_fill(&mut self, ncols: usize) {
         for col in 0..ncols {
             self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
@@ -115,6 +124,18 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Performs the vectorized Needleman-Wunsch fill phase for a batch of 8 sequences.
+    ///
+    /// This is the computational core of the aligner. It uses inter-sequence SIMD 
+    /// to process 8 independent alignments simultaneously.
+    ///
+    /// Key features:
+    /// - **Lane Transposition**: Gathers the `i-th` base of 8 subjects into one register.
+    /// - **Branchless Recurrence**: Uses SIMD `max` and `blend` to select optimal scores.
+    /// - **Row Recycling**: Only maintains two active rows of scores to stay in L1/L2 cache.
+    /// - **Variable Lengths**: Captures final scores for each lane as they reach their end.
+    ///
+    /// Returns an array of 8 final alignment scores.
     fn compute_fill(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
         let ref_len = self.reference.len();
         let mut final_scores = [0i16; 8];
@@ -177,6 +198,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         final_scores
     }
 
+    /// Reconstructs the optimal alignment paths for a batch of 8 sequences.
+    ///
+    /// This method performs the scalar traceback for each lane in the SIMD `ops` buffer.
+    /// It navigates backwards from each subject's end point to the start (0,0), 
+    /// producing the final `Alignment` results.
     fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Result<Alignment, AlignmentError>>) {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {

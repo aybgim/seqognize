@@ -295,6 +295,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Convert i16x8 to Op
     #[inline(always)]
     fn to_op(&self, i: usize, l_idx: usize) -> Op {
         let ops_simd: [i16; 8] = self.ops[l_idx].into();

@@ -337,8 +337,6 @@ mod tests {
         )
     }
 
-
-
     #[test]
     fn test_double_insertion() {
         assert_eq!(

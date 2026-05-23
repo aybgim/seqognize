@@ -1,9 +1,9 @@
-use crate::config::AlignmentConfig;
-use crate::aligner::{Aligner};
+use crate::aligner::Aligner;
 use crate::alignment::{Alignment, AlignmentBuilder};
-use crate::matrix::{Matrix, Idx, AlignmentError};
-use crate::{matrix};
-use crate::element::{Score, Element, Op};
+use crate::config::AlignmentConfig;
+use crate::element::{Element, Op, Score};
+use crate::matrix::AlignmentError;
+use crate::matrix;
 use wide::*;
 
 pub struct NtAlignmentConfig {
@@ -251,9 +251,9 @@ pub fn substitution(score: Score) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use crate::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
     use crate::aligner::Aligner;
     use crate::alignment::Alignment;
+    use crate::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 
     fn aligner(reference: &[u8]) -> GlobalNtAligner<NtAlignmentConfig> {
         GlobalNtAligner::new(

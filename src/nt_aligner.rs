@@ -120,7 +120,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     #[inline]
     fn compute_fill(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
         let ref_len = self.reference.len();
-        let actual_batch_size = chunk_subjects.len();
         let mut final_scores = [0i16; 8];
 
         for row in 1..nrows {

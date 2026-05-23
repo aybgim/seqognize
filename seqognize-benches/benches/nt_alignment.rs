@@ -20,7 +20,7 @@ fn nt_alignment_benchmark(c: &mut Criterion) {
         .map(|test| test.sequence.as_bytes())
         .collect();
 
-    let mut aligner: GlobalNtAligner = GlobalNtAligner::new(
+    let mut aligner = GlobalNtAligner::new(
         NtAlignmentConfig::new(1, -1, -1, -1),
         reference.to_vec()
     );

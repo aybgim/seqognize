@@ -35,25 +35,30 @@ impl NtAlignmentConfig {
 }
 
 impl AlignmentConfig for NtAlignmentConfig {
+    #[inline(always)]
     fn get_substitution_score(&self, _pos: (usize, usize), s: u8, r: u8) -> Score {
         if s == r { self.match_score } else { self.mismatch_penalty }
     }
+    #[inline(always)]
     fn get_subject_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.subject_gap_penalty
     }
+    #[inline(always)]
     fn get_reference_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.reference_gap_penalty
     }
+    #[inline(always)]
     fn get_max_reference_size(&self) -> usize {
         self.max_reference_size
     }
+    #[inline(always)]
     fn get_max_subject_size(&self) -> usize {
         self.max_subject_size
     }
 }
 
-pub struct GlobalNtAligner {
-    pub config: NtAlignmentConfig,
+pub struct GlobalNtAligner<C: AlignmentConfig> {
+    pub config: C,
     pub reference: Vec<u8>,
     pub top_row_scores: Vec<Score>,
     pub top_row_ops: Vec<Op>,
@@ -61,8 +66,8 @@ pub struct GlobalNtAligner {
     pub ops: Vec<i16x8>,
 }
 
-impl GlobalNtAligner {
-    pub fn new(config: NtAlignmentConfig, reference: Vec<u8>) -> Self {
+impl<C: AlignmentConfig> GlobalNtAligner<C> {
+    pub fn new(config: C, reference: Vec<u8>) -> Self {
         let ncols = reference.len() + 1;
         let mut top_row_scores = vec![0; ncols];
         let mut top_row_ops = vec![Op::START; ncols];
@@ -88,7 +93,7 @@ impl GlobalNtAligner {
     }
 }
 
-impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
+impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
     fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
         let results = self.align_batch(&[subject]);
         results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
@@ -161,6 +166,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                         sub_bases[i] = sub[row - 1] as i16;
                     }
                 }
+                let v_sub_bases = i16x8::from(sub_bases);
 
                 // Initialize column 0 for this row (Insert state).
                 let ref_gap_penalty = self.config.get_reference_gap_opening_penalty(row - 1);
@@ -171,13 +177,15 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
 
                 // Sweep across the reference bases.
                 for col in 1..ncols {
-                    let r = self.reference[col - 1];
-
-                    // Call the interface for each subject in the SIMD batch to support position-specific scores
+                    // Broadcast the single reference base to all 8 SIMD lanes.
+                    let v_ref_base = i16x8::from(self.reference[col - 1] as i16);
+                    
+                    // Call the interface for each subject in the SIMD batch to support position-specific scores.
+                    // Static dispatch (generics) allows the compiler to inline these calls.
                     let mut sub_scores = [0i16; 8];
                     for i in 0..actual_batch_size {
                         let s = sub_bases[i] as u8;
-                        sub_scores[i] = self.config.get_substitution_score((row, col), s, r);
+                        sub_scores[i] = self.config.get_substitution_score((row, col), s, v_ref_base.to_array()[0] as u8);
                     }
                     let v_sub_score = i16x8::from(sub_scores);
 
@@ -284,7 +292,7 @@ mod tests {
     use crate::aligner::Aligner;
     use crate::alignment::Alignment;
 
-    fn aligner(reference: &[u8]) -> GlobalNtAligner {
+    fn aligner(reference: &[u8]) -> GlobalNtAligner<NtAlignmentConfig> {
         GlobalNtAligner::new(
             NtAlignmentConfig::new(1, -1, -1, -1),
             reference.to_vec()

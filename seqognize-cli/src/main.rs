@@ -60,7 +60,7 @@ fn main() {
             arg(&matches, "reference_gap", -1i16),
         ),
         reference.to_vec()
-    );
+    ).expect("Failed to create aligner");
 
     let alignment = aligner.align(&subject).expect("Alignment failed");
     println!("Score: {:?}", alignment.score);

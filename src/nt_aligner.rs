@@ -76,29 +76,33 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// # Arguments
     /// * `config` - The alignment configuration (scoring, size limits).
     /// * `reference` - The fixed reference sequence to align against.
-    pub fn new(config: C, reference: Vec<u8>) -> Self {
+    ///
+    /// # Returns
+    /// `Ok(GlobalNtAligner)` if successful, or `Err(AlignmentError::SequenceTooLong)` if the reference sequence exceeds the maximum allowed size.
+    pub fn new(config: C, reference: Vec<u8>) -> Result<Self, AlignmentError> {
+        if reference.len() > config.get_max_reference_size() {
+            return Err(AlignmentError::SequenceTooLong);
+        }
+
         let ncols = reference.len() + 1;
         let mut top_row_scores = vec![0; ncols];
         let mut top_row_ops = vec![Op::START; ncols];
         
-        // Only pre-calculate if within safe limits to avoid i16 overflow
-        if reference.len() <= config.get_max_reference_size() {
-            let mut acc = 0;
-            for col in 1..ncols {
-                acc += config.get_subject_gap_opening_penalty(col - 1);
-                top_row_scores[col] = acc;
-                top_row_ops[col] = Op::DELETE;
-            }
+        let mut acc = 0;
+        for col in 1..ncols {
+            acc += config.get_subject_gap_opening_penalty(col - 1);
+            top_row_scores[col] = acc;
+            top_row_ops[col] = Op::DELETE;
         }
 
-        GlobalNtAligner {
+        Ok(GlobalNtAligner {
             config,
             reference,
             top_row_scores,
             top_row_ops,
             scores: [Vec::new(), Vec::new()],
             ops: Vec::new(),
-        }
+        })
     }
 
     /// Resizes internal buffers to accommodate the required number of rows and columns.
@@ -286,14 +290,6 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
         }
         all_results
     }
-
-    /// Checks if the given sequence lengths are within the safe limits for the aligner.
-    fn check_sizes(&self, subject_len: usize, reference_len: usize) -> Result<(), AlignmentError> {
-        if subject_len > self.config.get_max_subject_size() || reference_len > self.config.get_max_reference_size() {
-            return Err(AlignmentError::SequenceTooLong);
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -306,7 +302,7 @@ mod tests {
         GlobalNtAligner::new(
             NtAlignmentConfig::new(1, -1, -1, -1),
             reference.to_vec()
-        )
+        ).unwrap()
     }
 
     #[test]

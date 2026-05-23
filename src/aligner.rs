@@ -21,6 +21,4 @@ pub trait Aligner<C>
     fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError>;
 
     fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>>;
-
-    fn check_sizes(&self, subject_len: usize, reference_len: usize) -> Result<(), AlignmentError>;
 }

@@ -39,7 +39,15 @@ impl AlignmentConfig for NtAlignmentConfig {
     fn get_substitution_score(&self, _pos: (usize, usize), s: u8, r: u8) -> Score {
         if s == r { self.match_score } else { self.mismatch_penalty }
     }
-    // #[inline(always)]
+    
+    #[inline(always)]
+    fn get_substitution_score_v(&self, _pos: (usize, usize), subjects: i16x8, reference: u8) -> i16x8 {
+        let v_ref = i16x8::from(reference as i16);
+        let v_is_match = subjects.cmp_eq(v_ref);
+        v_is_match.blend(i16x8::from(self.match_score), i16x8::from(self.mismatch_penalty))
+    }
+
+    #[inline(always)]
     fn get_subject_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.subject_gap_penalty
     }
@@ -47,11 +55,11 @@ impl AlignmentConfig for NtAlignmentConfig {
     fn get_reference_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.reference_gap_penalty
     }
-    // #[inline(always)]
+    #[inline(always)]
     fn get_max_reference_size(&self) -> usize {
         self.max_reference_size
     }
-    // #[inline(always)]
+    #[inline(always)]
     fn get_max_subject_size(&self) -> usize {
         self.max_subject_size
     }
@@ -166,6 +174,8 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
                         sub_bases[i] = sub[row - 1] as i16;
                     }
                 }
+                let v_sub_bases = i16x8::from(sub_bases);
+
                 // Initialize column 0 for this row (Insert state).
                 let ref_gap_penalty = self.config.get_reference_gap_opening_penalty(row - 1);
                 let v_ref_gap = i16x8::from(ref_gap_penalty);
@@ -177,13 +187,8 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
                 for col in 1..ncols {
                     let r = self.reference[col - 1];
 
-                    // Call the interface for each subject in the SIMD batch to support position-specific scores
-                    let mut sub_scores = [0i16; 8];
-                    for i in 0..actual_batch_size {
-                        let s = sub_bases[i] as u8;
-                        sub_scores[i] = self.config.get_substitution_score((row, col), s, r);
-                    }
-                    let v_sub_score = i16x8::from(sub_scores);
+                    // Use the vectorized interface method to support position-specific scores efficiently.
+                    let v_sub_score = self.config.get_substitution_score_v((row, col), v_sub_bases, r);
 
                     // Recurrence: NW(i, j) = max(diag + substitution, up + gap, left + gap)
                     let v_score_match = self.scores[prev][col - 1] + v_sub_score;

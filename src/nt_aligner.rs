@@ -71,6 +71,11 @@ pub struct GlobalNtAligner<C: AlignmentConfig> {
 }
 
 impl<C: AlignmentConfig> GlobalNtAligner<C> {
+    /// Creates a new `GlobalNtAligner` with the given configuration and reference sequence.
+    ///
+    /// # Arguments
+    /// * `config` - The alignment configuration (scoring, size limits).
+    /// * `reference` - The fixed reference sequence to align against.
     pub fn new(config: C, reference: Vec<u8>) -> Self {
         let ncols = reference.len() + 1;
         let mut top_row_scores = vec![0; ncols];
@@ -96,6 +101,9 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Resizes internal buffers to accommodate the required number of rows and columns.
+    ///
+    /// Reuses existing allocations to minimize heap churn during batch processing.
     fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
         if self.scores[0].len() < ncols {
             self.scores[0].resize(ncols, i16x8::ZERO);
@@ -106,6 +114,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Initializes the first row of the dynamic programming matrix.
     fn initialize_fill(&mut self, ncols: usize) {
         for col in 0..ncols {
             self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
@@ -113,6 +122,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Executes the vectorized Needleman-Wunsch fill phase for a batch of sequences.
+    ///
+    /// # Returns
+    /// An array containing the final alignment scores for each lane in the SIMD vector.
     fn compute_fill(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
         let mut final_scores = [0i16; 8];
 
@@ -128,6 +141,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         final_scores
     }
 
+    /// Gathers nucleotide bases from the current row for all subjects in the batch into a SIMD vector.
     #[inline(always)]
     fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> i16x8 {
         let mut sub_bases = [0i16; 8];
@@ -139,6 +153,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         i16x8::from(sub_bases)
     }
 
+    /// Computes a single row of the DP matrix using SIMD instructions.
     #[inline(always)]
     fn compute_fill_row(&mut self, row: usize, v_sub_bases: i16x8, v_ref_gap: i16x8, ncols: usize) {
         let curr = row % 2;
@@ -153,6 +168,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Performs vectorized cell computation for a specific row and column.
     #[inline(always)]
     fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: i16x8, v_ref_gap: i16x8, ncols: usize) {
         let curr = row % 2;
@@ -183,6 +199,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         self.ops[row * ncols + col] = v_ops;
     }
 
+    /// Captures the scores for sequences that have reached their full length at the current row.
     #[inline(always)]
     fn capture_finished_scores(&self, chunk_subjects: &[&[u8]], row: usize, final_scores: &mut [i16; 8]) {
         let curr = row % 2;
@@ -195,6 +212,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Handles sequences with zero length to ensure they get correct gap-only alignment scores.
     #[inline(always)]
     fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [i16; 8]) {
         let ref_len = self.reference.len();
@@ -206,6 +224,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
+    /// Performs scalar traceback for each sequence in the batch to reconstruct the alignment paths.
     fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Result<Alignment, AlignmentError>>) {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {
@@ -226,6 +245,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 }
 
 impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
+    /// Aligns a single subject sequence against the reference.
     fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
         let results = self.align_batch(&[subject]);
         results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
@@ -267,6 +287,7 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
         all_results
     }
 
+    /// Checks if the given sequence lengths are within the safe limits for the aligner.
     fn check_sizes(&self, subject_len: usize, reference_len: usize) -> Result<(), AlignmentError> {
         if subject_len > self.config.get_max_subject_size() || reference_len > self.config.get_max_reference_size() {
             return Err(AlignmentError::SequenceTooLong);

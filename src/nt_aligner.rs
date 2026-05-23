@@ -183,8 +183,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         for row in 1..nrows {
             let v_sub_bases = self.gather_subject_bases(chunk_subjects, row);
             let v_ref_gap = i16x8::from(self.config.get_reference_gap_opening_penalty(row - 1));
-            
-            self.compute_fill_row(row, v_sub_bases, v_ref_gap, ncols);
+            self.compute_first_col(row, v_ref_gap, ncols);
+            for col in 1..ncols {
+                self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap, ncols);
+            }
             self.capture_finished_scores(chunk_subjects, row, &mut final_scores);
         }
 
@@ -202,16 +204,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             }
         }
         i16x8::from(sub_bases)
-    }
-
-    /// Computes a single row of the DP matrix using SIMD instructions.
-    #[inline(always)]
-    fn compute_fill_row(&mut self, row: usize, v_sub_bases: i16x8, v_ref_gap: i16x8, ncols: usize) {
-        self.compute_first_col(row, v_ref_gap, ncols);
-
-        for col in 1..ncols {
-            self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap, ncols);
-        }
     }
 
     /// Initialize column 0 for this row

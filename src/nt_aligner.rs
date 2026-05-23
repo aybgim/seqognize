@@ -232,7 +232,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let v_score_insert = self.scores[prev][col] + v_ref_gap;
         let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
 
-        let v_max_score = v_score_match.max(v_score_insert.max(v_score_delete));
+        let v_max_score = v_score_match.max(v_score_insert).max(v_score_delete);
         
         // Traceback Encoding: Store the winning operation in each lane.
         let mask_match = v_max_score.cmp_eq(v_score_match);

@@ -1,6 +1,6 @@
 use crate::alignment::Alignment;
-use crate::config::{AlignmentConfig};
-use crate::matrix::{Matrix, Idx, AlignmentError};
+use crate::config::AlignmentConfig;
+use crate::matrix::AlignmentError;
 
 pub trait Aligner<C>
     where C: AlignmentConfig {

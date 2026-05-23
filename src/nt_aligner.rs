@@ -306,6 +306,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 mod tests {
     use crate::aligner::{Aligner, AlignmentError};
     use crate::alignment::Alignment;
+    use crate::config::Score;
     use crate::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 
     fn aligner(reference: &[u8]) -> GlobalNtAligner<NtAlignmentConfig> {
@@ -450,7 +451,7 @@ mod tests {
         let subjects = vec![b"AGCT".as_slice(), b"AGAT".as_slice(), b"AG_T".as_slice()];
         let results = al.align_batch(&subjects);
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].as_ref().expect("Alignment 0 failed").score, 4);
-        assert_eq!(results[1].as_ref().expect("Alignment 1 failed").score, 2);
+        let scores: Vec<Score> = results.into_iter().map(|r| r.unwrap().score).collect();
+        assert_eq!(scores, Vec::from([4, 2, 2]));
     }
 }

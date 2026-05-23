@@ -228,6 +228,19 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
         results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
     }
 
+    /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
+    ///
+    /// This method orchestrates the high-performance alignment pipeline by:
+    /// 1. Grouping subjects into chunks that match the CPU's SIMD width (8 for `i16x8`).
+    /// 2. Reusing stateful memory buffers to eliminate heap allocation overhead.
+    /// 3. Executing a vectorized Needleman-Wunsch fill phase for each chunk.
+    /// 4. Performing individual scalar tracebacks to reconstruct the optimal paths.
+    ///
+    /// # Arguments
+    /// * `subjects` - A slice of nucleotide sequences to be aligned against the reference.
+    ///
+    /// # Returns
+    /// A `Vec` containing the results (Alignment or Error) for each input sequence in order.
     fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>> {
         let n_subjects = subjects.len();
         if n_subjects == 0 { return Vec::new(); }

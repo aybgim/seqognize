@@ -49,8 +49,8 @@ fn main() {
             .takes_value(false))
         .get_matches();
 
-    let reference = matches.value_of("reference").unwrap().as_bytes();
-    let subject = matches.value_of("subject").unwrap().as_bytes();
+    let reference = matches.value_of("reference").expect("reference is required").as_bytes();
+    let subject = matches.value_of("subject").expect("subject is required").as_bytes();
 
     let mut aligner: GlobalNtAligner = GlobalNtAligner::new(
         NtAlignmentConfig::new(

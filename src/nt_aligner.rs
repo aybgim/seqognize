@@ -91,7 +91,7 @@ impl GlobalNtAligner {
 impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
     fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
         let results = self.align_batch(&[subject]);
-        results.into_iter().next().unwrap()
+        results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
     }
 
     fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>> {
@@ -110,7 +110,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             let max_sub_len = chunk_subjects.iter().map(|s| s.len()).max().unwrap_or(0);
             let nrows = max_sub_len + 1;
 
-            // Prepare SIMD buffers
+            // Re-use SIMD buffers
             if self.scores[0].len() < ncols {
                 self.scores[0].resize(ncols, i16x8::ZERO);
                 self.scores[1].resize(ncols, i16x8::ZERO);
@@ -285,7 +285,7 @@ mod tests {
         let subjects = vec![b"AGCT".as_slice(), b"AGAT".as_slice(), b"AG_T".as_slice()];
         let results = al.align_batch(&subjects);
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].as_ref().unwrap().score, 4);
-        assert_eq!(results[1].as_ref().unwrap().score, 2);
+        assert_eq!(results[0].as_ref().expect("Alignment 0 failed").score, 4);
+        assert_eq!(results[1].as_ref().expect("Alignment 1 failed").score, 2);
     }
 }

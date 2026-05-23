@@ -298,7 +298,7 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
 
 #[cfg(test)]
 mod tests {
-    use crate::aligner::Aligner;
+    use crate::aligner::{Aligner, AlignmentError};
     use crate::alignment::Alignment;
     use crate::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 
@@ -326,11 +326,115 @@ mod tests {
     }
 
     #[test]
+    fn test_insertion() {
+        assert_eq!(
+            aligner(b"AGT").align(b"AGCT").unwrap(),
+            Alignment::from("AGCT", "AG_T", 2)
+        )
+    }
+
+    #[test]
+    fn test_deletion() {
+        assert_eq!(
+            aligner(b"AGCT").align(b"AGT").unwrap(),
+            Alignment::from("AG_T", "AGCT", 2)
+        )
+    }
+
+
+
+    #[test]
     fn test_double_insertion() {
         assert_eq!(
             aligner(b"AT").align(b"AGCT").unwrap(),
             Alignment::from("AGCT", "A__T", 0)
         )
+    }
+
+    #[test]
+    fn test_double_deletion() {
+        assert_eq!(
+            aligner(b"AGCT").align(b"AT").unwrap(),
+            Alignment::from("A__T", "AGCT", 0)
+        )
+    }
+
+    #[test]
+    fn test_leading_insertion() {
+        assert_eq!(
+            aligner(b"GCT").align(b"AGCT").unwrap(),
+            Alignment::from("AGCT", "_GCT", 2)
+        )
+    }
+
+    #[test]
+    fn test_leading_deletion() {
+        assert_eq!(
+            aligner(b"AGCT").align(b"GCT").unwrap(),
+            Alignment::from("_GCT", "AGCT", 2)
+        )
+    }
+
+    #[test]
+    fn test_trailing_insertion() {
+        assert_eq!(
+            aligner(b"AGC").align(b"AGCT").unwrap(),
+            Alignment::from("AGCT", "AGC_", 2)
+        )
+    }
+
+    #[test]
+    fn test_trailing_deletion() {
+        assert_eq!(
+            aligner(b"AGCT").align(b"AGC").unwrap(),
+            Alignment::from("AGC_", "AGCT", 2)
+        )
+    }
+
+    #[test]
+    fn test_two_insertions() {
+        assert_eq!(
+            aligner(b"GT").align(b"AGCT").unwrap(),
+            Alignment::from("AGCT", "_G_T", 0)
+        )
+    }
+
+    #[test]
+    fn test_two_deletions() {
+        assert_eq!(
+            aligner(b"AGCT").align(b"AC").unwrap(),
+            Alignment::from("A_C_", "AGCT", 0)
+        )
+    }
+
+    #[test]
+    fn test_empty_subject() {
+        assert_eq!(
+            aligner(b"AGCT").align(b"").unwrap(),
+            Alignment::from("____", "AGCT", -4)
+        )
+    }
+
+    #[test]
+    fn test_empty_reference() {
+        assert_eq!(
+            aligner(b"").align(b"AGCT").unwrap(),
+            Alignment::from("AGCT", "____", -4)
+        )
+    }
+
+    #[test]
+    fn test_oversize_subject() {
+        let long_seq = vec![b'A'; 40000];
+        let result = aligner(b"A").align(&long_seq);
+        assert_eq!(result, Err(AlignmentError::SequenceTooLong));
+    }
+
+    #[test]
+    fn test_oversize_reference() {
+        let long_seq = vec![b'A'; 40000];
+        let result = aligner(&long_seq).align(b"A");
+        assert_eq!(result, Err(AlignmentError::SequenceTooLong));
     }
 
     #[test]

@@ -98,11 +98,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
-    /// Ensures that the internal SIMD buffers have sufficient capacity for the current batch.
-    ///
-    /// This method resizes the `scores` and `ops` vectors if they are smaller than the 
-    /// required dimensions (`nrows * ncols`). By maintaining these buffers as fields, 
-    /// we avoid the cost of heap allocation on every alignment call.
     fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
         if self.scores[0].len() < ncols {
             self.scores[0].resize(ncols, i16x8::ZERO);
@@ -113,10 +108,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
-    /// Initializes the first row of the alignment matrix for a new batch.
-    ///
-    /// This method broadcasts the pre-calculated scalar scores and operations for Row 0 
-    /// (the reference gaps) into all 8 lanes of the SIMD buffers.
     fn initialize_fill(&mut self, ncols: usize) {
         for col in 0..ncols {
             self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
@@ -124,85 +115,99 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
-    /// Performs the vectorized Needleman-Wunsch fill phase for a batch of 8 sequences.
-    ///
-    /// This is the computational core of the aligner. It uses inter-sequence SIMD 
-    /// to process 8 independent alignments simultaneously.
-    ///
-    /// Key features:
-    /// - **Lane Transposition**: Gathers the `i-th` base of 8 subjects into one register.
-    /// - **Branchless Recurrence**: Uses SIMD `max` and `blend` to select optimal scores.
-    /// - **Row Recycling**: Only maintains two active rows of scores to stay in L1/L2 cache.
-    /// - **Variable Lengths**: Captures final scores for each lane as they reach their end.
-    ///
-    /// Returns an array of 8 final alignment scores.
     fn compute_fill(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
-        let ref_len = self.reference.len();
         let mut final_scores = [0i16; 8];
 
         for row in 1..nrows {
-            let curr = row % 2;
-            let prev = (row - 1) % 2;
-
-            let mut sub_bases = [0i16; 8];
-            for (i, sub) in chunk_subjects.iter().enumerate() {
-                if row <= sub.len() {
-                    sub_bases[i] = sub[row - 1] as i16;
-                }
-            }
-            let v_sub_bases = i16x8::from(sub_bases);
-
-            let ref_gap_penalty = self.config.get_reference_gap_opening_penalty(row - 1);
-            let v_ref_gap = i16x8::from(ref_gap_penalty);
-            self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
-            self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
-
-            for col in 1..ncols {
-                let r = self.reference[col - 1];
-                let v_sub_score = self.config.get_substitution_score_v((row, col), v_sub_bases, r);
-
-                let v_score_match = self.scores[prev][col - 1] + v_sub_score;
-                let v_ref_gap = i16x8::from(self.config.get_reference_gap_opening_penalty(row - 1));
-                let v_sub_gap = i16x8::from(self.config.get_subject_gap_opening_penalty(col - 1));
-
-                let v_score_insert = self.scores[prev][col] + v_ref_gap;
-                let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
-
-                let v_max_score = v_score_match.max(v_score_insert.max(v_score_delete));
-                
-                let mask_match = v_max_score.cmp_eq(v_score_match);
-                let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
-
-                let v_ops = mask_match.blend(i16x8::from(Op::MATCH as i16), 
-                                mask_insert.blend(i16x8::from(Op::INSERT as i16), 
-                                                i16x8::from(Op::DELETE as i16)));
-
-                self.scores[curr][col] = v_max_score;
-                self.ops[row * ncols + col] = v_ops;
-            }
-
-            for (i, sub) in chunk_subjects.iter().enumerate() {
-                if row == sub.len() {
-                    let row_scores: [i16; 8] = self.scores[curr][ref_len].into();
-                    final_scores[i] = row_scores[i];
-                }
-            }
+            let v_sub_bases = self.gather_subject_bases(chunk_subjects, row);
+            let v_ref_gap = i16x8::from(self.config.get_reference_gap_opening_penalty(row - 1));
+            
+            self.compute_fill_row(row, v_sub_bases, v_ref_gap, ncols);
+            self.capture_finished_scores(chunk_subjects, row, &mut final_scores);
         }
 
+        self.handle_empty_subjects(chunk_subjects, &mut final_scores);
+        final_scores
+    }
+
+    #[inline(always)]
+    fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> i16x8 {
+        let mut sub_bases = [0i16; 8];
+        for (i, sub) in chunk_subjects.iter().enumerate() {
+            if row <= sub.len() {
+                sub_bases[i] = sub[row - 1] as i16;
+            }
+        }
+        i16x8::from(sub_bases)
+    }
+
+    #[inline(always)]
+    fn compute_fill_row(&mut self, row: usize, v_sub_bases: i16x8, v_ref_gap: i16x8, ncols: usize) {
+        let curr = row % 2;
+        let prev = (row - 1) % 2;
+
+        // Initialize column 0 for this row
+        self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
+        self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
+
+        for col in 1..ncols {
+            self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap, ncols);
+        }
+    }
+
+    #[inline(always)]
+    fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: i16x8, v_ref_gap: i16x8, ncols: usize) {
+        let curr = row % 2;
+        let prev = (row - 1) % 2;
+        let r = self.reference[col - 1];
+
+        // Use the vectorized interface method to support position-specific scores efficiently.
+        let v_sub_score = self.config.get_substitution_score_v((row, col), v_sub_bases, r);
+
+        // Recurrence: NW(i, j) = max(diag + substitution, up + gap, left + gap)
+        let v_score_match = self.scores[prev][col - 1] + v_sub_score;
+        let v_sub_gap = i16x8::from(self.config.get_subject_gap_opening_penalty(col - 1));
+
+        let v_score_insert = self.scores[prev][col] + v_ref_gap;
+        let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
+
+        let v_max_score = v_score_match.max(v_score_insert.max(v_score_delete));
+        
+        // Traceback Encoding: Store the winning operation in each lane.
+        let mask_match = v_max_score.cmp_eq(v_score_match);
+        let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
+
+        let v_ops = mask_match.blend(i16x8::from(Op::MATCH as i16), 
+                        mask_insert.blend(i16x8::from(Op::INSERT as i16), 
+                                        i16x8::from(Op::DELETE as i16)));
+
+        self.scores[curr][col] = v_max_score;
+        self.ops[row * ncols + col] = v_ops;
+    }
+
+    #[inline(always)]
+    fn capture_finished_scores(&self, chunk_subjects: &[&[u8]], row: usize, final_scores: &mut [i16; 8]) {
+        let curr = row % 2;
+        let ref_len = self.reference.len();
+        for (i, sub) in chunk_subjects.iter().enumerate() {
+            if row == sub.len() {
+                let row_scores: [i16; 8] = self.scores[curr][ref_len].into();
+                final_scores[i] = row_scores[i];
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [i16; 8]) {
+        let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if sub.len() == 0 {
                 let row0_scores: [i16; 8] = self.scores[0][ref_len].into();
                 final_scores[i] = row0_scores[i];
             }
         }
-        final_scores
     }
 
-    /// Reconstructs the optimal alignment paths for a batch of 8 sequences.
-    ///
-    /// This method performs the scalar traceback for each lane in the SIMD `ops` buffer.
-    /// It navigates backwards from each subject's end point to the start (0,0), 
-    /// producing the final `Alignment` results.
     fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Result<Alignment, AlignmentError>>) {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {

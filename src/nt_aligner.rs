@@ -94,6 +94,20 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
         results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
     }
 
+    /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
+    ///
+    /// This implementation uses **inter-sequence SIMD vectorization** via the `wide` crate,
+    /// allowing 8 independent alignments to be processed simultaneously in a single CPU instruction stream.
+    /// It also employs **row recycling** to reduce the score matrix memory footprint from $O(N \times M)$
+    /// to $O(M)$, ensuring the "active" scores stay within the L1/L2 caches.
+    ///
+    /// The algorithm follows the **Needleman-Wunsch** global alignment pattern.
+    ///
+    /// # Arguments
+    /// * `subjects` - A slice of byte slices, each representing a nucleotide sequence to be aligned.
+    ///
+    /// # Returns
+    /// A `Vec` of results, where each item is either an `Alignment` or an `AlignmentError`.
     fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>> {
         let n_subjects = subjects.len();
         if n_subjects == 0 { return Vec::new(); }
@@ -102,6 +116,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
         let ref_len = self.reference.len();
         let ncols = ref_len + 1;
 
+        // Process subjects in chunks of 8 to match i16x8 SIMD width
         for chunk_idx in (0..n_subjects).step_by(8) {
             let chunk_end = (chunk_idx + 8).min(n_subjects);
             let chunk_subjects = &subjects[chunk_idx..chunk_end];
@@ -110,16 +125,20 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
             let max_sub_len = chunk_subjects.iter().map(|s| s.len()).max().unwrap_or(0);
             let nrows = max_sub_len + 1;
 
-            // Re-use SIMD buffers
+            // Re-use SIMD buffers to avoid expensive heap allocations per batch.
+            // We use two rows of i16x8 scores (current and previous) to keep the active
+            // working set within the L1/L2 caches (Row Recycling).
             if self.scores[0].len() < ncols {
                 self.scores[0].resize(ncols, i16x8::ZERO);
                 self.scores[1].resize(ncols, i16x8::ZERO);
             }
+            // The ops buffer stores the directions for all 8 alignments in the batch.
             if self.ops.len() < nrows * ncols {
                 self.ops.resize(nrows * ncols, i16x8::ZERO);
             }
 
-            // Fill Top Row (broadcast precalculated row 0)
+            // Fill Top Row: Broadcast the precalculated scalar row-0 scores and ops
+            // into all 8 lanes of the SIMD buffers.
             for col in 0..ncols {
                 self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
                 self.ops[col] = i16x8::from(self.top_row_ops[col] as i16);
@@ -132,11 +151,15 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
 
             let mut final_scores = [0i16; 8];
             
+            // Vectorized Fill Phase: Iterate through rows (subject bases).
+            // Each cell in the matrix represents the optimal score for the alignment
+            // of the first i bases of a subject and the first j bases of the reference.
             for row in 1..nrows {
                 let curr = row % 2;
                 let prev = (row - 1) % 2;
 
-                // Load subject bases for this row across all 8 subjects
+                // Transpose: Gather the i-th base of all 8 subjects into one SIMD register.
+                // This enables inter-sequence parallelism using the Needleman-Wunsch recurrence.
                 let mut sub_bases = [0i16; 8];
                 for (i, sub) in chunk_subjects.iter().enumerate() {
                     if row <= sub.len() {
@@ -145,22 +168,28 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 }
                 let v_sub_bases = i16x8::from(sub_bases);
 
-                // Initialize column 0 for this row
+                // Initialize column 0 for this row (Insert state).
                 let v_acc_ref = self.scores[prev][0] + ref_gap_v;
                 self.scores[curr][0] = v_acc_ref;
                 self.ops[row * ncols] = i16x8::from(Op::INSERT as i16);
 
+                // Sweep across the reference bases.
                 for col in 1..ncols {
+                    // Broadcast the single reference base to all 8 SIMD lanes.
                     let v_ref_base = i16x8::from(self.reference[col - 1] as i16);
+                    
+                    // Branchless SIMD comparison and match/mismatch score selection.
                     let v_is_match = v_sub_bases.cmp_eq(v_ref_base);
                     let v_sub_score = v_is_match.blend(match_score_v, mismatch_penalty_v);
 
+                    // Recurrence: NW(i, j) = max(diag + substitution, up + gap, left + gap)
                     let v_score_match = self.scores[prev][col - 1] + v_sub_score;
                     let v_score_insert = self.scores[prev][col] + ref_gap_v;
                     let v_score_delete = self.scores[curr][col - 1] + sub_gap_v;
 
                     let v_max_score = v_score_match.max(v_score_insert.max(v_score_delete));
                     
+                    // Traceback Encoding: Store the winning operation in each lane.
                     let mask_match = v_max_score.cmp_eq(v_score_match);
                     let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
 
@@ -172,7 +201,8 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                     self.ops[row * ncols + col] = v_ops;
                 }
 
-                // If any sequence finishes at this row, capture its final score from the last column
+                // Sequence completion check: If a subject is finished at this row,
+                // capture its final alignment score from the last column.
                 for (i, sub) in chunk_subjects.iter().enumerate() {
                     if row == sub.len() {
                         let row_scores: [i16; 8] = self.scores[curr][ref_len].into();
@@ -181,7 +211,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 }
             }
 
-            // Handle cases where subject length is 0 (final score is from row 0)
+            // Handle edge case: empty subject sequences.
             for (i, sub) in chunk_subjects.iter().enumerate() {
                 if sub.len() == 0 {
                     let row0_scores: [i16; 8] = self.scores[0][ref_len].into();
@@ -189,7 +219,8 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 }
             }
 
-            // Extract results and perform traceback
+            // Traceback Phase: Reconstruct the optimal alignment path for each sequence.
+            // We read directly from the SIMD 'ops' buffer, extracting one lane at a time.
             for i in 0..actual_batch_size {
                 let sub = chunk_subjects[i];
                 let end_idx = (sub.len(), ref_len);
@@ -198,6 +229,7 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                 let mut cursor = end_idx;
                 while cursor != (0, 0) {
                     let l_idx = cursor.0 * ncols + cursor.1;
+                    // Extract the Op for the i-th sequence in the batch.
                     let ops_simd: [i16; 8] = self.ops[l_idx].into();
                     let op: Op = unsafe { std::mem::transmute(ops_simd[i] as u8) };
                     builder.take(op, cursor);

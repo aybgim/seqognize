@@ -88,7 +88,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let ncols = reference.len() + 1;
         let mut top_row_scores = vec![0; ncols];
         let mut top_row_ops = vec![Op::START; ncols];
-        
+
         let mut acc = 0;
         for col in 1..ncols {
             acc += config.get_subject_gap_opening_penalty(col - 1);
@@ -105,7 +105,53 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             ops: Vec::new(),
         })
     }
+}
 
+impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
+    /// Aligns a single subject sequence against the reference.
+    fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
+        let results = self.align_batch(&[subject]);
+        results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
+    }
+
+    /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
+    ///
+    /// This method orchestrates the high-performance alignment pipeline by:
+    /// 1. Grouping subjects into chunks that match the CPU's SIMD width (8 for `i16x8`).
+    /// 2. Reusing stateful memory buffers to eliminate heap allocation overhead.
+    /// 3. Executing a vectorized Needleman-Wunsch fill phase for each chunk.
+    /// 4. Performing individual scalar tracebacks to reconstruct the optimal paths.
+    ///
+    /// # Arguments
+    /// * `subjects` - A slice of nucleotide sequences to be aligned against the reference.
+    ///
+    /// # Returns
+    /// A `Vec` containing the results (Alignment or Error) for each input sequence in order.
+    fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>> {
+        let n_subjects = subjects.len();
+        if n_subjects == 0 { return Vec::new(); }
+
+        let mut all_results = Vec::with_capacity(n_subjects);
+        let ref_len = self.reference.len();
+        let ncols = ref_len + 1;
+
+        for chunk_idx in (0..n_subjects).step_by(8) {
+            let chunk_end = (chunk_idx + 8).min(n_subjects);
+            let chunk_subjects = &subjects[chunk_idx..chunk_end];
+
+            let max_sub_len = chunk_subjects.iter().map(|s| s.len()).max().unwrap_or(0);
+            let nrows = max_sub_len + 1;
+
+            self.prepare_batch_buffers(nrows, ncols);
+            self.initialize_fill(ncols);
+            let final_scores = self.compute_fill(chunk_subjects, nrows, ncols);
+            self.perform_tracebacks(chunk_subjects, final_scores, ncols, &mut all_results);
+        }
+        all_results
+    }
+}
+
+impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// Resizes internal buffers to accommodate the required number of rows and columns.
     ///
     /// Reuses existing allocations to minimize heap churn during batch processing.
@@ -249,50 +295,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             builder.take(Op::START, cursor);
             all_results.push(Ok(builder.build(final_scores[i])));
         }
-    }
-}
-
-impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
-    /// Aligns a single subject sequence against the reference.
-    fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
-        let results = self.align_batch(&[subject]);
-        results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
-    }
-
-    /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
-    ///
-    /// This method orchestrates the high-performance alignment pipeline by:
-    /// 1. Grouping subjects into chunks that match the CPU's SIMD width (8 for `i16x8`).
-    /// 2. Reusing stateful memory buffers to eliminate heap allocation overhead.
-    /// 3. Executing a vectorized Needleman-Wunsch fill phase for each chunk.
-    /// 4. Performing individual scalar tracebacks to reconstruct the optimal paths.
-    ///
-    /// # Arguments
-    /// * `subjects` - A slice of nucleotide sequences to be aligned against the reference.
-    ///
-    /// # Returns
-    /// A `Vec` containing the results (Alignment or Error) for each input sequence in order.
-    fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>> {
-        let n_subjects = subjects.len();
-        if n_subjects == 0 { return Vec::new(); }
-
-        let mut all_results = Vec::with_capacity(n_subjects);
-        let ref_len = self.reference.len();
-        let ncols = ref_len + 1;
-
-        for chunk_idx in (0..n_subjects).step_by(8) {
-            let chunk_end = (chunk_idx + 8).min(n_subjects);
-            let chunk_subjects = &subjects[chunk_idx..chunk_end];
-
-            let max_sub_len = chunk_subjects.iter().map(|s| s.len()).max().unwrap_or(0);
-            let nrows = max_sub_len + 1;
-
-            self.prepare_batch_buffers(nrows, ncols);
-            self.initialize_fill(ncols);
-            let final_scores = self.compute_fill(chunk_subjects, nrows, ncols);
-            self.perform_tracebacks(chunk_subjects, final_scores, ncols, &mut all_results);
-        }
-        all_results
     }
 }
 

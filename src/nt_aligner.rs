@@ -161,7 +161,6 @@ impl Aligner<NtAlignmentConfig> for GlobalNtAligner {
                         sub_bases[i] = sub[row - 1] as i16;
                     }
                 }
-                let v_sub_bases = i16x8::from(sub_bases);
 
                 // Initialize column 0 for this row (Insert state).
                 let ref_gap_penalty = self.config.get_reference_gap_opening_penalty(row - 1);

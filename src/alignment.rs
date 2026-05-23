@@ -3,6 +3,7 @@ use crate::config::Score;
 
 pub const GAP: char = '_';
 
+#[repr(u8)]
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Op {
     START,

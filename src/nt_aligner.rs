@@ -98,7 +98,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
-    // #[inline]
     fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
         if self.scores[0].len() < ncols {
             self.scores[0].resize(ncols, i16x8::ZERO);
@@ -109,7 +108,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
-    // #[inline]
     fn initialize_fill(&mut self, ncols: usize) {
         for col in 0..ncols {
             self.scores[0][col] = i16x8::from(self.top_row_scores[col]);
@@ -117,7 +115,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
-    // #[inline]
     fn compute_fill(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
         let ref_len = self.reference.len();
         let mut final_scores = [0i16; 8];
@@ -180,7 +177,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         final_scores
     }
 
-    // #[inline]
     fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Result<Alignment, AlignmentError>>) {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {

@@ -433,7 +433,7 @@ mod tests {
             NtAlignmentConfig::new(1, -1, -1, -1),
             long_seq
         );
-        assert_eq!(result, Err(AlignmentError::SequenceTooLong));
+        assert!(matches!(result, Err(AlignmentError::SequenceTooLong)));
     }
 
     #[test]

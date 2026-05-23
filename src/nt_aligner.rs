@@ -302,7 +302,7 @@ mod tests {
         GlobalNtAligner::new(
             NtAlignmentConfig::new(1, -1, -1, -1),
             reference.to_vec()
-        ).unwrap()
+        ).expect("Failed to create aligner")
     }
 
     #[test]

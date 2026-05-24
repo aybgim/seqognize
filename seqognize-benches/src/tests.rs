@@ -48,11 +48,10 @@ mod tests {
             .map(|t| t.sequence.as_bytes())
             .collect();
 
-        let results = aligner.align_batch(&mutant_sequences);
+        let results = aligner.align_batch(&mutant_sequences).expect("Batch alignment failed");
 
-        for (i, result) in results.into_iter().enumerate() {
+        for (i, alignment) in results.into_iter().enumerate() {
             let test = &test_suite.test_cases[i];
-            let alignment = result.expect("Alignment failed during test");
             assert_eq!(test.score, alignment.score);
             assert_eq!(test.aligned_sequences, alignment.aligned_sequences());
         }

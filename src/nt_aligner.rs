@@ -112,26 +112,35 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
     /// Aligns a single subject sequence against the reference.
     fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
-        let results = self.align_batch(&[subject]);
-        results.into_iter().next().expect("align_batch must return exactly one result for a single subject input")
+        let mut results = self.align_batch(&[subject])?;
+        Ok(results.pop().expect("align_batch must return exactly one result for a single subject input"))
     }
 
     /// Aligns a batch of subject sequences against the aligner's fixed reference sequence.
     ///
     /// This method orchestrates the high-performance alignment pipeline by:
-    /// 1. Grouping subjects into chunks that match the CPU's SIMD width (8 or 16).
-    /// 2. Reusing stateful memory buffers to eliminate heap allocation overhead.
-    /// 3. Executing a vectorized Needleman-Wunsch fill phase for each chunk.
-    /// 4. Performing individual scalar tracebacks to reconstruct the optimal paths.
+    /// 1. Validating that all subjects are within the maximum allowed length.
+    /// 2. Grouping subjects into chunks that match the CPU's SIMD width (8 or 16).
+    /// 3. Reusing stateful memory buffers to eliminate heap allocation overhead.
+    /// 4. Executing a vectorized Needleman-Wunsch fill phase for each chunk.
+    /// 5. Performing individual scalar tracebacks to reconstruct the optimal paths.
     ///
     /// # Arguments
     /// * `subjects` - A slice of nucleotide sequences to be aligned against the reference.
     ///
     /// # Returns
-    /// A `Vec` containing the results (Alignment or Error) for each input sequence in order.
-    fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>> {
+    /// `Ok(Vec<Alignment>)` containing results for each input sequence, or `Err(AlignmentError::SequenceTooLong)` if any sequence exceeds the limit.
+    fn align_batch(&mut self, subjects: &[&[u8]]) -> Result<Vec<Alignment>, AlignmentError> {
         let n_subjects = subjects.len();
-        if n_subjects == 0 { return Vec::new(); }
+        if n_subjects == 0 { return Ok(Vec::new()); }
+
+        // Early validation: Check if any subject is too long before allocating or computing.
+        let max_allowed = self.config.get_max_subject_size();
+        for sub in subjects {
+            if sub.len() > max_allowed {
+                return Err(SequenceTooLong);
+            }
+        }
 
         let mut all_results = Vec::with_capacity(n_subjects);
         let ref_len = self.reference.len();
@@ -149,7 +158,7 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
             let final_scores = self.fill_matrix(chunk_subjects, nrows, ncols);
             self.perform_tracebacks(chunk_subjects, final_scores, ncols, &mut all_results);
         }
-        all_results
+        Ok(all_results)
     }
 }
 
@@ -283,13 +292,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Performs scalar traceback for each sequence in the batch to reconstruct the alignment paths.
-    fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Result<Alignment, AlignmentError>>) {
+    fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Alignment>) {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {
             let sub = chunk_subjects[i];
-            if sub.len() > self.config.get_max_subject_size() {
-                all_results.push(Err(SequenceTooLong));
-            }
             let mut builder = AlignmentBuilder::new(sub, &self.reference);
             let mut cursor = Idx(sub.len(), ref_len);
             while cursor != Idx(0, 0) {
@@ -300,7 +306,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             }
             builder.take(Op::START, cursor);
             let alignment = builder.build(final_scores[i]);
-            all_results.push(Ok(alignment));
+            all_results.push(alignment);
         }
     }
 
@@ -459,9 +465,9 @@ mod tests {
     fn test_batch_alignment() {
         let mut al = aligner(b"AGCT");
         let subjects = vec![b"AGCT".as_slice(), b"AGAT".as_slice(), b"".as_slice()];
-        let results = al.align_batch(&subjects);
+        let results = al.align_batch(&subjects).unwrap();
         assert_eq!(results.len(), 3);
-        let scores: Vec<Score> = results.into_iter().map(|r| r.unwrap().score).collect();
+        let scores: Vec<Score> = results.into_iter().map(|r| r.score).collect();
         assert_eq!(scores, Vec::from([4, 2, -4]));
     }
 
@@ -475,8 +481,8 @@ mod tests {
         // Subject 2: "" (len 0) -> Score: -2 (1 gap in reference)
         // Subject 3: "AA" (len 2) -> Score: 1 - 2 = -1 (match + 1 gap in subject)
         let subjects = vec![b"A".as_slice(), b"".as_slice(), b"AA".as_slice()];
-        let results = al.align_batch(&subjects);
-        let scores: Vec<Score> = results.into_iter().map(|r| r.unwrap().score).collect();
+        let results = al.align_batch(&subjects).unwrap();
+        let scores: Vec<Score> = results.into_iter().map(|r| r.score).collect();
         
         // If the bug exists:
         // Row 0: [0, -2]

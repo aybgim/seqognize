@@ -20,5 +20,5 @@ pub trait Aligner<C>
 
     fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError>;
 
-    fn align_batch(&mut self, subjects: &[&[u8]]) -> Vec<Result<Alignment, AlignmentError>>;
+    fn align_batch(&mut self, subjects: &[&[u8]]) -> Result<Vec<Alignment>, AlignmentError>;
 }

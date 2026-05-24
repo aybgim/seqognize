@@ -182,6 +182,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     fn fill_matrix(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
         let mut final_scores = [0i16; 8];
 
+        // Row 0 is initialized but not computed in the SIMD loop. We capture 
+        // empty subject scores here before the rolling buffer (size 2) 
+        // overwrites Row 0 (e.g., Row 2, Row 4, etc. reuse scores[0]).
+        self.handle_empty_subjects(chunk_subjects, &mut final_scores);
+
         for row in 1..nrows {
             let v_sub_bases = self.gather_subject_bases(chunk_subjects, row);
             let v_ref_gap = SimdI16::from(self.config.get_reference_gap_opening_penalty(row - 1));
@@ -192,7 +197,6 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             self.capture_finished_scores(chunk_subjects, row, &mut final_scores);
         }
 
-        self.handle_empty_subjects(chunk_subjects, &mut final_scores);
         final_scores
     }
 
@@ -454,10 +458,32 @@ mod tests {
     #[test]
     fn test_batch_alignment() {
         let mut al = aligner(b"AGCT");
-        let subjects = vec![b"AGCT".as_slice(), b"AGAT".as_slice(), b"AG_T".as_slice()];
+        let subjects = vec![b"AGCT".as_slice(), b"AGAT".as_slice(), b"".as_slice()];
         let results = al.align_batch(&subjects);
         assert_eq!(results.len(), 3);
         let scores: Vec<Score> = results.into_iter().map(|r| r.unwrap().score).collect();
-        assert_eq!(scores, Vec::from([4, 2, 2]));
+        assert_eq!(scores, Vec::from([4, 2, -4]));
+    }
+
+    #[test]
+    fn test_batch_alignment_different_penalties() {
+        // match=1, mismatch=-1, gap=-2
+        let config = NtAlignmentConfig::new(1, -1, -2, -2);
+        let mut al = GlobalNtAligner::new(config, b"A".to_vec()).unwrap();
+        
+        // Subject 1: "A" (len 1) -> Score: 1 (match)
+        // Subject 2: "" (len 0) -> Score: -2 (1 gap in reference)
+        // Subject 3: "AA" (len 2) -> Score: 1 - 2 = -1 (match + 1 gap in subject)
+        let subjects = vec![b"A".as_slice(), b"".as_slice(), b"AA".as_slice()];
+        let results = al.align_batch(&subjects);
+        let scores: Vec<Score> = results.into_iter().map(|r| r.unwrap().score).collect();
+        
+        // If the bug exists:
+        // Row 0: [0, -2]
+        // Row 1: [ -2, 1] (Sub 1 matches A, Sub 2 treated as null matches nothing)
+        // Row 2: [ -4, -1] (Sub 3 matches A at row 1, then gap at row 2)
+        // handle_empty_subjects (after loop) reads Row 2, Col 1 for Sub 2 -> -1
+        // Correct score for Sub 2 should be Row 0, Col 1 -> -2
+        assert_eq!(scores, Vec::from([1, -2, -1]));
     }
 }

@@ -1,6 +1,6 @@
 use crate::aligner::{Aligner, AlignmentError};
 use crate::alignment::{Alignment, AlignmentBuilder, Idx};
-use crate::config::{AlignmentConfig, Score, SimdArray, SimdI16, SIMD_ZERO_ARRAY};
+use crate::config::{AlignmentConfig, Score, SimdArray, SimdI16, SIMD_ZERO_ARRAY, LANES};
 use crate::alignment::Op;
 use crate::aligner::AlignmentError::SequenceTooLong;
 
@@ -146,8 +146,8 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
         let ref_len = self.reference.len();
         let ncols = ref_len + 1;
 
-        for chunk_idx in (0..n_subjects).step_by(8) {
-            let chunk_end = (chunk_idx + 8).min(n_subjects);
+        for chunk_idx in (0..n_subjects).step_by(LANES) {
+            let chunk_end = (chunk_idx + LANES).min(n_subjects);
             let chunk_subjects = &subjects[chunk_idx..chunk_end];
 
             let max_sub_len = chunk_subjects.iter().map(|s| s.len()).max().unwrap_or(0);
@@ -188,8 +188,8 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     ///
     /// # Returns
     /// An array containing the final alignment scores for each lane in the SIMD vector.
-    fn fill_matrix(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; 8] {
-        let mut final_scores = [0i16; 8];
+    fn fill_matrix(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; LANES] {
+        let mut final_scores = [0i16; LANES];
 
         // Row 0 is initialized but not computed in the SIMD loop. We capture 
         // empty subject scores here before the rolling buffer (size 2) 
@@ -268,7 +268,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
     /// Captures the scores for sequences that have reached their full length at the current row.
     #[inline(always)]
-    fn capture_finished_scores(&self, chunk_subjects: &[&[u8]], row: usize, final_scores: &mut [i16; 8]) {
+    fn capture_finished_scores(&self, chunk_subjects: &[&[u8]], row: usize, final_scores: &mut [i16; LANES]) {
         let curr = row % 2;
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
@@ -281,7 +281,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
     /// Handles sequences with zero length to ensure they get correct gap-only alignment scores.
     #[inline(always)]
-    fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [i16; 8]) {
+    fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [i16; LANES]) {
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if sub.len() == 0 {
@@ -292,7 +292,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Performs scalar traceback for each sequence in the batch to reconstruct the alignment paths.
-    fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; 8], ncols: usize, all_results: &mut Vec<Alignment>) {
+    fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; LANES], ncols: usize, all_results: &mut Vec<Alignment>) {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {
             let sub = chunk_subjects[i];

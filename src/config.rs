@@ -7,6 +7,7 @@ mod avx2_config {
     pub type SimdI16 = wide::i16x16;
     pub type SimdArray = [i16; 16];
     pub const SIMD_ZERO_ARRAY: SimdArray = [0i16; 16];
+    pub const LANES: usize = 16;
 }
 
 #[cfg(not(target_feature = "avx2"))]
@@ -17,6 +18,7 @@ mod fallback_config {
     pub type SimdI16 = wide::i16x8;
     pub type SimdArray = [i16; 8];
     pub const SIMD_ZERO_ARRAY: SimdArray = [0i16; 8];
+    pub const LANES: usize = 8;
 }
 
 
@@ -30,7 +32,7 @@ pub trait AlignmentConfig {
     fn get_substitution_score_v(&self, pos: (usize, usize), subjects: SimdI16, reference: u8) -> SimdI16 {
         let subjects_arr: SimdArray = subjects.into();
         let mut results = SIMD_ZERO_ARRAY;
-        for i in 0..8 {
+        for i in 0..LANES {
             results[i] = self.get_substitution_score(pos, subjects_arr[i] as u8, reference);
         }
         SimdI16::from(results)

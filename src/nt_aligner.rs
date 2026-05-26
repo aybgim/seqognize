@@ -1,6 +1,6 @@
 use crate::aligner::{Aligner, AlignmentError};
 use crate::alignment::{Alignment, AlignmentBuilder, Idx};
-use crate::config::{AlignmentConfig, Score, SimdI16, LANES};
+use crate::config::{AlignmentConfig, Score, SimdScore, LANES};
 use crate::alignment::Op;
 use crate::aligner::AlignmentError::SequenceTooLong;
 
@@ -67,10 +67,10 @@ impl AlignmentConfig for NtAlignmentConfig {
     /// * `subjects` - A SIMD vector containing subject nucleotide bases.
     /// * `reference` - The reference nucleotide base.
     #[inline(always)]
-    fn get_substitution_score_v(&self, _pos: (usize, usize), subjects: SimdI16, reference: u8) -> SimdI16 {
-        let v_ref = SimdI16::from(reference as i16);
+    fn get_substitution_score_v(&self, _pos: (usize, usize), subjects: SimdScore, reference: u8) -> SimdScore {
+        let v_ref = SimdScore::from(reference as i16);
         let v_is_match = subjects.cmp_eq(v_ref);
-        v_is_match.blend(SimdI16::from(self.match_score), SimdI16::from(self.mismatch_penalty))
+        v_is_match.blend(SimdScore::from(self.match_score), SimdScore::from(self.mismatch_penalty))
     }
 
     /// Returns the gap opening penalty for the subject sequence.
@@ -112,9 +112,9 @@ pub struct GlobalNtAligner<C: AlignmentConfig> {
     /// Precomputed operations for the first row of the dynamic programming matrix.
     pub top_row_ops: Vec<Op>,
     /// Rolling buffers for the dynamic programming matrix scores (only 2 rows needed).
-    pub scores: [Vec<SimdI16>; 2],
+    pub scores: [Vec<SimdScore>; 2],
     /// Compressed operation matrix for traceback, stored as SIMD vectors.
-    pub ops: Vec<SimdI16>,
+    pub ops: Vec<SimdScore>,
 }
 
 impl<C: AlignmentConfig> GlobalNtAligner<C> {
@@ -222,11 +222,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `ncols` - The required number of columns (reference length + 1).
     fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
         if self.scores[0].len() < ncols {
-            self.scores[0].resize(ncols, SimdI16::ZERO);
-            self.scores[1].resize(ncols, SimdI16::ZERO);
+            self.scores[0].resize(ncols, SimdScore::ZERO);
+            self.scores[1].resize(ncols, SimdScore::ZERO);
         }
         if self.ops.len() < nrows * ncols {
-            self.ops.resize(nrows * ncols, SimdI16::ZERO);
+            self.ops.resize(nrows * ncols, SimdScore::ZERO);
         }
     }
 
@@ -236,8 +236,8 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `ncols` - The number of columns to initialize.
     fn fill_first_row(&mut self, ncols: usize) {
         for col in 0..ncols {
-            self.scores[0][col] = SimdI16::from(self.top_row_scores[col]);
-            self.ops[col] = SimdI16::from(self.top_row_ops[col] as i16);
+            self.scores[0][col] = SimdScore::from(self.top_row_scores[col]);
+            self.ops[col] = SimdScore::from(self.top_row_ops[col] as i16);
         }
     }
 
@@ -260,7 +260,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
         for row in 1..nrows {
             let v_sub_bases = self.gather_subject_bases(chunk_subjects, row);
-            let v_ref_gap = SimdI16::from(self.config.get_reference_gap_opening_penalty(row - 1));
+            let v_ref_gap = SimdScore::from(self.config.get_reference_gap_opening_penalty(row - 1));
             self.compute_first_col(row, v_ref_gap, ncols);
             for col in 1..ncols {
                 self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap, ncols);
@@ -280,14 +280,14 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// # Returns
     /// A SIMD vector containing the bases at `row - 1` for each subject, or 0 if the subject is shorter.
     #[inline(always)]
-    fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> SimdI16 {
+    fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> SimdScore {
         let mut sub_bases = [0i16; LANES];
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if row <= sub.len() {
                 sub_bases[i] = sub[row - 1] as i16;
             }
         }
-        SimdI16::from(sub_bases)
+        SimdScore::from(sub_bases)
     }
 
     /// Initialize column 0 for this row.
@@ -297,11 +297,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `v_ref_gap` - A SIMD vector containing the reference gap penalty.
     /// * `ncols` - The total number of columns in the matrix.
     #[inline(always)]
-    fn compute_first_col(&mut self, row: usize, v_ref_gap: SimdI16, ncols: usize) {
+    fn compute_first_col(&mut self, row: usize, v_ref_gap: SimdScore, ncols: usize) {
         let curr = row % 2;
         let prev = (row - 1) % 2;
         self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
-        self.ops[row * ncols] = SimdI16::from(Op::INSERT as i16);
+        self.ops[row * ncols] = SimdScore::from(Op::INSERT as i16);
     }
 
     /// Performs vectorized cell computation for a specific row and column.
@@ -313,7 +313,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `v_ref_gap` - A SIMD vector containing the reference gap penalty.
     /// * `ncols` - The total number of columns in the matrix.
     #[inline(always)]
-    fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: SimdI16, v_ref_gap: SimdI16, ncols: usize) {
+    fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: SimdScore, v_ref_gap: SimdScore, ncols: usize) {
         let curr = row % 2;
         let prev = (row - 1) % 2;
         let r = self.reference[col - 1];
@@ -323,7 +323,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
         // Recurrence: NW(i, j) = max(diag + substitution, up + gap, left + gap)
         let v_score_match = self.scores[prev][col - 1] + v_sub_score;
-        let v_sub_gap = SimdI16::from(self.config.get_subject_gap_opening_penalty(col - 1));
+        let v_sub_gap = SimdScore::from(self.config.get_subject_gap_opening_penalty(col - 1));
 
         let v_score_insert = self.scores[prev][col] + v_ref_gap;
         let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
@@ -336,10 +336,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
         // Option A: Clean alignment formatting
         let v_ops = mask_match.blend(
-            SimdI16::from(Op::MATCH as i16),
+            SimdScore::from(Op::MATCH as i16),
             mask_insert.blend(
-                SimdI16::from(Op::INSERT as i16),
-                SimdI16::from(Op::DELETE as i16),
+                SimdScore::from(Op::INSERT as i16),
+                SimdScore::from(Op::DELETE as i16),
             ),
         );
 
@@ -416,7 +416,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// The `Op` value for the specified lane and position.
     #[inline(always)]
     fn to_op(&self, i: usize, l_idx: usize) -> Op {
-        let ops_simd: SimdI16 = self.ops[l_idx].into();
+        let ops_simd: SimdScore = self.ops[l_idx].into();
         Op::try_from(ops_simd.to_array()[i] as u8).expect("Invalid Op byte!")
     }
 }

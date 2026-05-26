@@ -225,8 +225,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             self.scores[0].resize(ncols, SimdScore::ZERO);
             self.scores[1].resize(ncols, SimdScore::ZERO);
         }
-        if self.ops.len() < nrows * ncols {
-            self.ops.resize(nrows * ncols, SimdScore::ZERO);
+        
+        let unrolled_op_mtx_len = nrows * ncols;
+        if self.ops.len() < unrolled_op_mtx_len {
+            self.ops.resize(unrolled_op_mtx_len, SimdScore::ZERO);
         }
     }
 

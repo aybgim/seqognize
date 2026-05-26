@@ -7,16 +7,30 @@ use crate::aligner::AlignmentError::SequenceTooLong;
 use std::convert::TryFrom;
 use wide::CmpEq;
 
+/// Configuration for nucleotide alignment scoring.
 pub struct NtAlignmentConfig {
+    /// Score awarded for matching nucleotide bases.
     pub match_score: Score,
+    /// Penalty for mismatching nucleotide bases.
     pub mismatch_penalty: Score,
+    /// Penalty for opening a gap in the subject sequence.
     pub subject_gap_penalty: Score,
+    /// Penalty for opening a gap in the reference sequence.
     pub reference_gap_penalty: Score,
+    /// Maximum allowed reference sequence size.
     pub max_reference_size: usize,
+    /// Maximum allowed subject sequence size.
     pub max_subject_size: usize,
 }
 
 impl NtAlignmentConfig {
+    /// Creates a new `NtAlignmentConfig` with the specified scoring parameters.
+    ///
+    /// # Arguments
+    /// * `match_score` - The reward for matching nucleotide bases.
+    /// * `mismatch_penalty` - The penalty for mismatching nucleotide bases (usually negative).
+    /// * `subject_gap_penalty` - The penalty for opening a gap in the subject sequence (usually negative).
+    /// * `reference_gap_penalty` - The penalty for opening a gap in the reference sequence (usually negative).
     pub fn new(match_score: Score, mismatch_penalty: Score, subject_gap_penalty: Score, reference_gap_penalty: Score) -> Self {
         let p_max = match_score.abs()
             .max(mismatch_penalty.abs())
@@ -36,10 +50,22 @@ impl NtAlignmentConfig {
 }
 
 impl AlignmentConfig for NtAlignmentConfig {
+    /// Returns the substitution score for a pair of nucleotide bases.
+    ///
+    /// # Arguments
+    /// * `_pos` - The (row, col) position in the matrix (unused in this implementation).
+    /// * `s` - The subject nucleotide base.
+    /// * `r` - The reference nucleotide base.
     fn get_substitution_score(&self, _pos: (usize, usize), s: u8, r: u8) -> Score {
         if s == r { self.match_score } else { self.mismatch_penalty }
     }
     
+    /// Returns a SIMD vector of substitution scores for a batch of subject bases against a single reference base.
+    ///
+    /// # Arguments
+    /// * `_pos` - The (row, col) position in the matrix (unused in this implementation).
+    /// * `subjects` - A SIMD vector containing subject nucleotide bases.
+    /// * `reference` - The reference nucleotide base.
     #[inline(always)]
     fn get_substitution_score_v(&self, _pos: (usize, usize), subjects: SimdI16, reference: u8) -> SimdI16 {
         let v_ref = SimdI16::from(reference as i16);
@@ -47,29 +73,47 @@ impl AlignmentConfig for NtAlignmentConfig {
         v_is_match.blend(SimdI16::from(self.match_score), SimdI16::from(self.mismatch_penalty))
     }
 
+    /// Returns the gap opening penalty for the subject sequence.
+    ///
+    /// # Arguments
+    /// * `_pos` - The position in the sequence (unused in this implementation).
     fn get_subject_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.subject_gap_penalty
     }
+
+    /// Returns the gap opening penalty for the reference sequence.
+    ///
+    /// # Arguments
+    /// * `_pos` - The position in the sequence (unused in this implementation).
     #[inline(always)]
     fn get_reference_gap_opening_penalty(&self, _pos: usize) -> Score {
         self.reference_gap_penalty
     }
 
+    /// Returns the maximum allowed size for the reference sequence.
     fn get_max_reference_size(&self) -> usize {
         self.max_reference_size
     }
 
+    /// Returns the maximum allowed size for the subject sequence.
     fn get_max_subject_size(&self) -> usize {
         self.max_subject_size
     }
 }
 
+/// A global nucleotide aligner that uses SIMD-accelerated Needleman-Wunsch.
 pub struct GlobalNtAligner<C: AlignmentConfig> {
+    /// The alignment configuration (scoring, size limits).
     pub config: C,
+    /// The fixed reference sequence to align against.
     pub reference: Vec<u8>,
+    /// Precomputed scores for the first row of the dynamic programming matrix.
     pub top_row_scores: Vec<Score>,
+    /// Precomputed operations for the first row of the dynamic programming matrix.
     pub top_row_ops: Vec<Op>,
+    /// Rolling buffers for the dynamic programming matrix scores (only 2 rows needed).
     pub scores: [Vec<SimdI16>; 2],
+    /// Compressed operation matrix for traceback, stored as SIMD vectors.
     pub ops: Vec<SimdI16>,
 }
 
@@ -111,6 +155,12 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
 impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
     /// Aligns a single subject sequence against the reference.
+    ///
+    /// # Arguments
+    /// * `subject` - A slice of nucleotide bases to align against the reference.
+    ///
+    /// # Returns
+    /// `Ok(Alignment)` containing the result, or `Err(AlignmentError::SequenceTooLong)` if the subject exceeds the limit.
     fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError> {
         let mut results = self.align_batch(&[subject])?;
         Ok(results.pop().expect("align_batch must return exactly one result for a single subject input"))
@@ -166,6 +216,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// Resizes internal buffers to accommodate the required number of rows and columns.
     ///
     /// Reuses existing allocations to minimize heap churn during batch processing.
+    ///
+    /// # Arguments
+    /// * `nrows` - The required number of rows (maximum subject length in the current batch + 1).
+    /// * `ncols` - The required number of columns (reference length + 1).
     fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
         if self.scores[0].len() < ncols {
             self.scores[0].resize(ncols, SimdI16::ZERO);
@@ -177,6 +231,9 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Initializes the first row of the dynamic programming matrix.
+    ///
+    /// # Arguments
+    /// * `ncols` - The number of columns to initialize.
     fn fill_first_row(&mut self, ncols: usize) {
         for col in 0..ncols {
             self.scores[0][col] = SimdI16::from(self.top_row_scores[col]);
@@ -185,6 +242,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Executes the vectorized Needleman-Wunsch fill phase for a batch of sequences.
+    ///
+    /// # Arguments
+    /// * `chunk_subjects` - The batch of subject sequences to align.
+    /// * `nrows` - The maximum number of rows to compute.
+    /// * `ncols` - The number of columns in the dynamic programming matrix.
     ///
     /// # Returns
     /// An array containing the final alignment scores for each lane in the SIMD vector.
@@ -210,6 +272,13 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Gathers nucleotide bases from the current row for all subjects in the batch into a SIMD vector.
+    ///
+    /// # Arguments
+    /// * `chunk_subjects` - The batch of subject sequences.
+    /// * `row` - The 1-based index of the current row being processed.
+    ///
+    /// # Returns
+    /// A SIMD vector containing the bases at `row - 1` for each subject, or 0 if the subject is shorter.
     #[inline(always)]
     fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> SimdI16 {
         let mut sub_bases = [0i16; LANES];
@@ -221,7 +290,12 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         SimdI16::from(sub_bases)
     }
 
-    /// Initialize column 0 for this row
+    /// Initialize column 0 for this row.
+    ///
+    /// # Arguments
+    /// * `row` - The 1-based index of the current row.
+    /// * `v_ref_gap` - A SIMD vector containing the reference gap penalty.
+    /// * `ncols` - The total number of columns in the matrix.
     #[inline(always)]
     fn compute_first_col(&mut self, row: usize, v_ref_gap: SimdI16, ncols: usize) {
         let curr = row % 2;
@@ -231,6 +305,13 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Performs vectorized cell computation for a specific row and column.
+    ///
+    /// # Arguments
+    /// * `row` - The 1-based index of the current row.
+    /// * `col` - The 1-based index of the current column.
+    /// * `v_sub_bases` - A SIMD vector of nucleotide bases for each subject at this row.
+    /// * `v_ref_gap` - A SIMD vector containing the reference gap penalty.
+    /// * `ncols` - The total number of columns in the matrix.
     #[inline(always)]
     fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: SimdI16, v_ref_gap: SimdI16, ncols: usize) {
         let curr = row % 2;
@@ -267,6 +348,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Captures the scores for sequences that have reached their full length at the current row.
+    ///
+    /// # Arguments
+    /// * `chunk_subjects` - The batch of subject sequences.
+    /// * `row` - The current row index.
+    /// * `final_scores` - A mutable array to store the final scores for each lane.
     #[inline(always)]
     fn capture_finished_scores(&self, chunk_subjects: &[&[u8]], row: usize, final_scores: &mut [i16; LANES]) {
         let curr = row % 2;
@@ -280,18 +366,28 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     }
 
     /// Handles sequences with zero length to ensure they get correct gap-only alignment scores.
+    ///
+    /// # Arguments
+    /// * `chunk_subjects` - The batch of subject sequences.
+    /// * `final_scores` - A mutable array to store the final scores for each lane.
     #[inline(always)]
     fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [i16; LANES]) {
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if sub.len() == 0 {
-                let row0_scores: [i16; 16] = self.scores[0][ref_len].into();
+                let row0_scores: [i16; LANES] = self.scores[0][ref_len].into();
                 final_scores[i] = row0_scores[i];
             }
         }
     }
 
     /// Performs scalar traceback for each sequence in the batch to reconstruct the alignment paths.
+    ///
+    /// # Arguments
+    /// * `chunk_subjects` - The batch of subject sequences.
+    /// * `final_scores` - The final alignment scores for each lane in the batch.
+    /// * `ncols` - The number of columns in the dynamic programming matrix.
+    /// * `all_results` - A mutable vector where the reconstructed `Alignment` objects will be stored.
     fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; LANES], ncols: usize, all_results: &mut Vec<Alignment>) {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {
@@ -310,7 +406,14 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         }
     }
 
-    /// Convert SimdI16 to Op
+    /// Converts a SIMD operation vector at the given linear index into a scalar `Op` for a specific lane.
+    ///
+    /// # Arguments
+    /// * `i` - The index of the lane (0 to LANES-1).
+    /// * `l_idx` - The linear index into the `ops` buffer.
+    ///
+    /// # Returns
+    /// The `Op` value for the specified lane and position.
     #[inline(always)]
     fn to_op(&self, i: usize, l_idx: usize) -> Op {
         let ops_simd: SimdI16 = self.ops[l_idx].into();

@@ -36,7 +36,7 @@ impl NtAlignmentConfig {
             .max(mismatch_penalty.abs())
             .max(subject_gap_penalty.abs())
             .max(reference_gap_penalty.abs());
-        
+
         let limit = if p_max > 0 { (16383 / p_max) as usize } else { usize::MAX };
         NtAlignmentConfig {
             match_score,
@@ -59,7 +59,7 @@ impl AlignmentConfig for NtAlignmentConfig {
     fn get_substitution_score(&self, _pos: (usize, usize), s: u8, r: u8) -> Score {
         if s == r { self.match_score } else { self.mismatch_penalty }
     }
-    
+
     /// Returns a SIMD vector of substitution scores for a batch of subject bases against a single reference base.
     ///
     /// # Arguments
@@ -254,17 +254,19 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     fn fill_matrix(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [Score; LANES] {
         let mut final_scores = [0 as Score; LANES];
 
-        // Row 0 is initialized but not computed in the SIMD loop. We capture 
-        // empty subject scores here before the rolling buffer (size 2) 
+        // Row 0 is initialized but not computed in the SIMD loop. We capture
+        // empty subject scores here before the rolling buffer (size 2)
         // overwrites Row 0 (e.g., Row 2, Row 4, etc. reuse scores[0]).
         self.handle_empty_subjects(chunk_subjects, &mut final_scores);
 
         for row in 1..nrows {
             let v_sub_bases = self.gather_subject_bases(chunk_subjects, row);
             let v_ref_gap = SimdScore::from(self.config.get_reference_gap_opening_penalty(row - 1));
-            self.compute_first_col(row, v_ref_gap, ncols);
+            self.compute_first_col(row, v_ref_gap);
+            let ops_row = row * ncols;
+            self.ops[ops_row] = SimdScore::from(Op::INSERT as Score);
             for col in 1..ncols {
-                self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap, ncols);
+                self.ops[ops_row + col] = self.compute_cell_simd(row, col, v_sub_bases, v_ref_gap);
             }
             self.capture_finished_scores(chunk_subjects, row, &mut final_scores);
         }
@@ -296,13 +298,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// # Arguments
     /// * `row` - The 1-based index of the current row.
     /// * `v_ref_gap` - A SIMD vector containing the reference gap penalty.
-    /// * `ncols` - The total number of columns in the matrix.
     #[inline(always)]
-    fn compute_first_col(&mut self, row: usize, v_ref_gap: SimdScore, ncols: usize) {
+    fn compute_first_col(&mut self, row: usize, v_ref_gap: SimdScore) {
         let curr = row % 2;
         let prev = (row - 1) % 2;
         self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
-        self.ops[row * ncols] = SimdScore::from(Op::INSERT as Score);
     }
 
     /// Performs vectorized cell computation for a specific row and column.
@@ -312,9 +312,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `col` - The 1-based index of the current column.
     /// * `v_sub_bases` - A SIMD vector of nucleotide bases for each subject at this row.
     /// * `v_ref_gap` - A SIMD vector containing the reference gap penalty.
-    /// * `ncols` - The total number of columns in the matrix.
+    ///
+    /// # Returns
+    /// A SIMD vector containing the winning operations (traceback) for each lane at this cell.
     #[inline(always)]
-    fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: SimdScore, v_ref_gap: SimdScore, ncols: usize) {
+    fn compute_cell_simd(&mut self, row: usize, col: usize, v_sub_bases: SimdScore, v_ref_gap: SimdScore) -> SimdScore {
         let curr = row % 2;
         let prev = (row - 1) % 2;
         let r = self.reference[col - 1];
@@ -330,22 +332,19 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let v_score_delete = self.scores[curr][col - 1] + v_sub_gap;
 
         let v_max_score = v_score_match.max(v_score_insert).max(v_score_delete);
-        
+        self.scores[curr][col] = v_max_score;
+
         // Traceback Encoding: Store the winning operation in each lane.
         let mask_match = v_max_score.cmp_eq(v_score_match);
         let mask_insert = v_max_score.cmp_eq(v_score_insert) & !mask_match;
 
-        // Option A: Clean alignment formatting
-        let v_ops = mask_match.blend(
+        mask_match.blend(
             SimdScore::from(Op::MATCH as Score),
             mask_insert.blend(
                 SimdScore::from(Op::INSERT as Score),
                 SimdScore::from(Op::DELETE as Score),
             ),
-        );
-
-        self.scores[curr][col] = v_max_score;
-        self.ops[row * ncols + col] = v_ops;
+        )
     }
 
     /// Captures the scores for sequences that have reached their full length at the current row.
@@ -373,13 +372,24 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `final_scores` - A mutable array to store the final scores for each lane.
     #[inline(always)]
     fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [Score; LANES]) {
-        let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if sub.len() == 0 {
-                let row0_scores: [Score; LANES] = self.scores[0][ref_len].into();
-                final_scores[i] = row0_scores[i];
+                final_scores[i] = self.get_all_gaps_score();
             }
         }
+    }
+
+    /// Returns the total gap penalty score for an alignment of a zero-length sequence against the entire reference.
+    ///
+    /// This represents the score at row 0, column `ref_len`.
+    ///
+    /// # Returns
+    /// The cumulative reference gap penalty score.
+    #[inline(always)]
+    fn get_all_gaps_score(&self) -> Score {
+        let ref_len = self.reference.len();
+        let row0_scores: [Score; LANES] = self.scores[0][ref_len].into();
+        row0_scores[0]
     }
 
     /// Performs scalar traceback for each sequence in the batch to reconstruct the alignment paths.
@@ -396,8 +406,8 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             let mut builder = AlignmentBuilder::new(sub, &self.reference);
             let mut cursor = Idx(sub.len(), ref_len);
             while cursor != Idx(0, 0) {
-                let l_idx = cursor.0 * ncols + cursor.1;
-                let op = self.to_op(i, l_idx);
+                let idx = cursor.0 * ncols + cursor.1;
+                let op = self.to_op(i, idx);
                 builder.take(op, cursor);
                 cursor = cursor.move_back(op);
             }
@@ -411,13 +421,13 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     ///
     /// # Arguments
     /// * `i` - The index of the lane (0 to LANES-1).
-    /// * `l_idx` - The linear index into the `ops` buffer.
+    /// * `idx` - The linear index into the `ops` buffer.
     ///
     /// # Returns
     /// The `Op` value for the specified lane and position.
     #[inline(always)]
-    fn to_op(&self, i: usize, l_idx: usize) -> Op {
-        let ops_simd: SimdScore = self.ops[l_idx].into();
+    fn to_op(&self, i: usize, idx: usize) -> Op {
+        let ops_simd: SimdScore = self.ops[idx].into();
         Op::try_from(ops_simd.to_array()[i] as u8).expect("Invalid Op byte!")
     }
 }
@@ -571,7 +581,7 @@ mod tests {
         let subjects = vec![b"AGCT".as_slice(), b"AGAT".as_slice(), b"".as_slice()];
         let results = al.align_batch(&subjects).unwrap();
         assert_eq!(results.len(), 3);
-        let scores: Vec<Score> = results.into_iter().map(|r| r.score).collect();
+        let scores: Vec<Score> = results.iter().map(|r| r.score).collect();
         assert_eq!(scores, Vec::from([4, 2, -4]));
     }
 
@@ -580,14 +590,14 @@ mod tests {
         // match=1, mismatch=-1, gap=-2
         let config = NtAlignmentConfig::new(1, -1, -2, -2);
         let mut al = GlobalNtAligner::new(config, b"A".to_vec()).unwrap();
-        
+
         // Subject 1: "A" (len 1) -> Score: 1 (match)
         // Subject 2: "" (len 0) -> Score: -2 (1 gap in reference)
         // Subject 3: "AA" (len 2) -> Score: 1 - 2 = -1 (match + 1 gap in subject)
         let subjects = vec![b"A".as_slice(), b"".as_slice(), b"AA".as_slice()];
         let results = al.align_batch(&subjects).unwrap();
-        let scores: Vec<Score> = results.into_iter().map(|r| r.score).collect();
-        
+        let scores: Vec<Score> = results.iter().map(|r| r.score).collect();
+
         // If the bug exists:
         // Row 0: [0, -2]
         // Row 1: [ -2, 1] (Sub 1 matches A, Sub 2 treated as null matches nothing)

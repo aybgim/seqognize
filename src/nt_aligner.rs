@@ -68,7 +68,7 @@ impl AlignmentConfig for NtAlignmentConfig {
     /// * `reference` - The reference nucleotide base.
     #[inline(always)]
     fn get_substitution_score_v(&self, _pos: (usize, usize), subjects: SimdScore, reference: u8) -> SimdScore {
-        let v_ref = SimdScore::from(reference as i16);
+        let v_ref = SimdScore::from(reference as Score);
         let v_is_match = subjects.cmp_eq(v_ref);
         v_is_match.blend(SimdScore::from(self.match_score), SimdScore::from(self.mismatch_penalty))
     }
@@ -238,7 +238,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     fn fill_first_row(&mut self, ncols: usize) {
         for col in 0..ncols {
             self.scores[0][col] = SimdScore::from(self.top_row_scores[col]);
-            self.ops[col] = SimdScore::from(self.top_row_ops[col] as i16);
+            self.ops[col] = SimdScore::from(self.top_row_ops[col] as Score);
         }
     }
 
@@ -251,8 +251,8 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     ///
     /// # Returns
     /// An array containing the final alignment scores for each lane in the SIMD vector.
-    fn fill_matrix(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [i16; LANES] {
-        let mut final_scores = [0i16; LANES];
+    fn fill_matrix(&mut self, chunk_subjects: &[&[u8]], nrows: usize, ncols: usize) -> [Score; LANES] {
+        let mut final_scores = [0 as Score; LANES];
 
         // Row 0 is initialized but not computed in the SIMD loop. We capture 
         // empty subject scores here before the rolling buffer (size 2) 
@@ -282,10 +282,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// A SIMD vector containing the bases at `row - 1` for each subject, or 0 if the subject is shorter.
     #[inline(always)]
     fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> SimdScore {
-        let mut sub_bases = [0i16; LANES];
+        let mut sub_bases = [0 as Score; LANES];
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if row <= sub.len() {
-                sub_bases[i] = sub[row - 1] as i16;
+                sub_bases[i] = sub[row - 1] as Score;
             }
         }
         SimdScore::from(sub_bases)
@@ -302,7 +302,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let curr = row % 2;
         let prev = (row - 1) % 2;
         self.scores[curr][0] = self.scores[prev][0] + v_ref_gap;
-        self.ops[row * ncols] = SimdScore::from(Op::INSERT as i16);
+        self.ops[row * ncols] = SimdScore::from(Op::INSERT as Score);
     }
 
     /// Performs vectorized cell computation for a specific row and column.
@@ -337,10 +337,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
 
         // Option A: Clean alignment formatting
         let v_ops = mask_match.blend(
-            SimdScore::from(Op::MATCH as i16),
+            SimdScore::from(Op::MATCH as Score),
             mask_insert.blend(
-                SimdScore::from(Op::INSERT as i16),
-                SimdScore::from(Op::DELETE as i16),
+                SimdScore::from(Op::INSERT as Score),
+                SimdScore::from(Op::DELETE as Score),
             ),
         );
 
@@ -355,12 +355,12 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `row` - The current row index.
     /// * `final_scores` - A mutable array to store the final scores for each lane.
     #[inline(always)]
-    fn capture_finished_scores(&self, chunk_subjects: &[&[u8]], row: usize, final_scores: &mut [i16; LANES]) {
+    fn capture_finished_scores(&self, chunk_subjects: &[&[u8]], row: usize, final_scores: &mut [Score; LANES]) {
         let curr = row % 2;
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if row == sub.len() {
-                let row_scores: [i16; LANES] = self.scores[curr][ref_len].into();
+                let row_scores: [Score; LANES] = self.scores[curr][ref_len].into();
                 final_scores[i] = row_scores[i];
             }
         }
@@ -372,11 +372,11 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `chunk_subjects` - The batch of subject sequences.
     /// * `final_scores` - A mutable array to store the final scores for each lane.
     #[inline(always)]
-    fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [i16; LANES]) {
+    fn handle_empty_subjects(&self, chunk_subjects: &[&[u8]], final_scores: &mut [Score; LANES]) {
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if sub.len() == 0 {
-                let row0_scores: [i16; LANES] = self.scores[0][ref_len].into();
+                let row0_scores: [Score; LANES] = self.scores[0][ref_len].into();
                 final_scores[i] = row0_scores[i];
             }
         }
@@ -389,7 +389,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// * `final_scores` - The final alignment scores for each lane in the batch.
     /// * `ncols` - The number of columns in the dynamic programming matrix.
     /// * `all_results` - A mutable vector where the reconstructed `Alignment` objects will be stored.
-    fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [i16; LANES], ncols: usize, all_results: &mut Vec<Alignment>) {
+    fn perform_tracebacks(&self, chunk_subjects: &[&[u8]], final_scores: [Score; LANES], ncols: usize, all_results: &mut Vec<Alignment>) {
         let ref_len = self.reference.len();
         for i in 0..chunk_subjects.len() {
             let sub = chunk_subjects[i];

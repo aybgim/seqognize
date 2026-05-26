@@ -1,6 +1,6 @@
 use crate::aligner::{Aligner, AlignmentError};
 use crate::alignment::{Alignment, AlignmentBuilder, Idx};
-use crate::config::{AlignmentConfig, Score, SimdArray, SimdI16, SIMD_ZERO_ARRAY, LANES};
+use crate::config::{AlignmentConfig, Score, SimdI16, LANES};
 use crate::alignment::Op;
 use crate::aligner::AlignmentError::SequenceTooLong;
 
@@ -212,7 +212,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
     /// Gathers nucleotide bases from the current row for all subjects in the batch into a SIMD vector.
     #[inline(always)]
     fn gather_subject_bases(&self, chunk_subjects: &[&[u8]], row: usize) -> SimdI16 {
-        let mut sub_bases = SIMD_ZERO_ARRAY;
+        let mut sub_bases = [0i16; LANES];
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if row <= sub.len() {
                 sub_bases[i] = sub[row - 1] as i16;
@@ -273,7 +273,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if row == sub.len() {
-                let row_scores: SimdArray = self.scores[curr][ref_len].into();
+                let row_scores: [i16; LANES] = self.scores[curr][ref_len].into();
                 final_scores[i] = row_scores[i];
             }
         }
@@ -285,7 +285,7 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
         let ref_len = self.reference.len();
         for (i, sub) in chunk_subjects.iter().enumerate() {
             if sub.len() == 0 {
-                let row0_scores: SimdArray = self.scores[0][ref_len].into();
+                let row0_scores: [i16; 16] = self.scores[0][ref_len].into();
                 final_scores[i] = row0_scores[i];
             }
         }

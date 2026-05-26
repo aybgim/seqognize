@@ -147,7 +147,10 @@ impl<C: AlignmentConfig> GlobalNtAligner<C> {
             reference,
             top_row_scores,
             top_row_ops,
-            scores: [Vec::new(), Vec::new()],
+            scores: [
+                vec![SimdScore::ZERO; ncols],
+                vec![SimdScore::ZERO; ncols],
+            ],
             ops: Vec::new(),
         })
     }

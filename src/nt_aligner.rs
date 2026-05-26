@@ -206,7 +206,7 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
             let max_sub_len = chunk_subjects.iter().map(|s| s.len()).max().unwrap_or(0);
             let nrows = max_sub_len + 1;
 
-            self.prepare_batch_buffers(nrows, ncols);
+            self.ensure_ops_capacity(nrows, ncols);
             self.fill_first_row(ncols);
             let final_scores = self.fill_matrix(chunk_subjects, nrows, ncols);
             self.perform_tracebacks(chunk_subjects, final_scores, ncols, &mut all_results);
@@ -216,19 +216,15 @@ impl<C: AlignmentConfig> Aligner<C> for GlobalNtAligner<C> {
 }
 
 impl<C: AlignmentConfig> GlobalNtAligner<C> {
-    /// Resizes internal buffers to accommodate the required number of rows and columns.
+    /// Ensures that the traceback operation matrix has enough capacity for the current batch.
     ///
-    /// Reuses existing allocations to minimize heap churn during batch processing.
+    /// Reuses the existing allocation to minimize heap churn. The buffer grows lazily
+    /// as longer subject sequences are encountered.
     ///
     /// # Arguments
     /// * `nrows` - The required number of rows (maximum subject length in the current batch + 1).
     /// * `ncols` - The required number of columns (reference length + 1).
-    fn prepare_batch_buffers(&mut self, nrows: usize, ncols: usize) {
-        if self.scores[0].len() < ncols {
-            self.scores[0].resize(ncols, SimdScore::ZERO);
-            self.scores[1].resize(ncols, SimdScore::ZERO);
-        }
-        
+    fn ensure_ops_capacity(&mut self, nrows: usize, ncols: usize) {
         let unrolled_op_mtx_len = nrows * ncols;
         if self.ops.len() < unrolled_op_mtx_len {
             self.ops.resize(unrolled_op_mtx_len, SimdScore::ZERO);

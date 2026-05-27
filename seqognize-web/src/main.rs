@@ -176,7 +176,7 @@ impl Model {
 
     fn align(&mut self) -> Result<AlignmentResult, ParseIntError> {
         let config = self.config()?;
-        let mut aligner = GlobalNtAligner::new(config, self.reference.as_bytes().to_vec()).expect("Reference sequence too long.");
+        let mut aligner = GlobalNtAligner::<_>::new(config, self.reference.as_bytes().to_vec()).expect("Reference sequence too long.");
         let alignment = match aligner.align(
             &self.subject.as_bytes(),
         ) {

@@ -39,7 +39,7 @@ mod tests {
         let test_suite = read_tests();
         let reference = test_suite.reference.as_bytes();
 
-        let mut aligner = GlobalNtAligner::new(
+        let mut aligner = GlobalNtAligner::<_>::new(
             NtAlignmentConfig::new(1, -1, -1, -1),
             reference.to_vec()
         ).expect("Failed to create aligner");

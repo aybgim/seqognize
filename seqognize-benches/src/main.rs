@@ -30,7 +30,7 @@ fn main() -> std::io::Result<()> {
     // Generate reference sequence (1000 bp)
     let reference: Vec<u8> = (0..1000).map(|_| BASES[rng.gen_range(0..4)]).collect();
 
-    let mut aligner = GlobalNtAligner::new(
+    let mut aligner = GlobalNtAligner::<_>::new(
         NtAlignmentConfig::new(1, -1, -1, -1),
         reference.clone()
     ).expect("Failed to create aligner");

@@ -1,6 +1,7 @@
 use std::fmt;
 use crate::alignment::Alignment;
 use crate::config::AlignmentConfig;
+use crate::simd_backend::{SimdBackend, WideBackend};
 
 #[derive(Debug, PartialEq)]
 pub enum AlignmentError {
@@ -15,8 +16,8 @@ impl fmt::Display for AlignmentError {
     }
 }
 
-pub trait Aligner<C>
-    where C: AlignmentConfig {
+pub trait Aligner<C, B = WideBackend>
+    where C: AlignmentConfig<B>, B: SimdBackend {
 
     fn align(&mut self, subject: &[u8]) -> Result<Alignment, AlignmentError>;
 

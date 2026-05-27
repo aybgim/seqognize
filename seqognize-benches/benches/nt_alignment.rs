@@ -4,6 +4,7 @@ extern crate criterion;
 use criterion::Criterion;
 use seqognize::aligner::Aligner;
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
+use seqognize::simd_backend::WideBackend;
 use seqognize_benches::tests::read_tests;
 
 /// Benchmarks the global nucleotide alignment algorithm using a batch of synthetic data.
@@ -20,7 +21,7 @@ fn nt_alignment_benchmark(c: &mut Criterion) {
         .map(|test| test.sequence.as_bytes())
         .collect();
 
-    let mut aligner = GlobalNtAligner::new(
+    let mut aligner = GlobalNtAligner::<_, WideBackend>::new(
         NtAlignmentConfig::new(1, -1, -1, -1),
         reference.to_vec()
     ).expect("Failed to create aligner");

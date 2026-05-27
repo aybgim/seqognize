@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
-use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
-use seqognize::aligner::Aligner;
 use clap::{App, Arg, ArgMatches};
-use std::str::FromStr;
+use seqognize::aligner::Aligner;
+use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use std::fmt::Debug;
+use std::str::FromStr;
 
 fn main() {
     let matches = App::new("Seqognize")
@@ -52,7 +52,7 @@ fn main() {
     let reference = matches.value_of("reference").expect("reference is required").as_bytes();
     let subject = matches.value_of("subject").expect("subject is required").as_bytes();
 
-    let mut aligner = GlobalNtAligner::new(
+    let mut aligner = GlobalNtAligner::<_>::new(
         NtAlignmentConfig::new(
             arg(&matches, "match", 1i16),
             arg(&matches, "mismatch", -1i16),

@@ -1,6 +1,7 @@
 use core::iter;
-use crate::config::Score;
 use num_enum::TryFromPrimitive;
+
+pub type Score = i16;
 
 pub const GAP: char = '_';
 

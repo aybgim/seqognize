@@ -3,6 +3,7 @@ members = [
     "seqognize-cli",
     "seqognize-web",
     "seqognize-benches",
+    "seqognize-parallel",
 ]
 
 [package]

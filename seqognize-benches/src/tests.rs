@@ -32,6 +32,7 @@ pub fn read_tests() -> TestSuite {
 mod tests {
     use seqognize::aligner::Aligner;
     use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
+    use seqognize_parallel::ParallelAligner;
     use crate::tests::read_tests;
 
     #[test]
@@ -43,6 +44,31 @@ mod tests {
             NtAlignmentConfig::new(1, -1, -1, -1),
             reference.to_vec()
         ).expect("Failed to create aligner");
+
+        let mutant_sequences: Vec<&[u8]> = test_suite.test_cases.iter()
+            .map(|t| t.sequence.as_bytes())
+            .collect();
+
+        let results = aligner.align_batch(&mutant_sequences).expect("Batch alignment failed");
+
+        for (i, alignment) in results.into_iter().enumerate() {
+            let test = &test_suite.test_cases[i];
+            assert_eq!(test.score, alignment.score);
+            assert_eq!(test.aligned_sequences, alignment.aligned_sequences());
+        }
+    }
+
+    #[test]
+    fn test_parallel_synth() {
+        let test_suite = read_tests();
+        let reference = test_suite.reference.as_bytes();
+
+        let base_aligner = GlobalNtAligner::<_>::new(
+            NtAlignmentConfig::new(1, -1, -1, -1),
+            reference.to_vec()
+        ).expect("Failed to create aligner");
+        
+        let mut aligner = ParallelAligner::new(base_aligner, 10);
 
         let mutant_sequences: Vec<&[u8]> = test_suite.test_cases.iter()
             .map(|t| t.sequence.as_bytes())

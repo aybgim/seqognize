@@ -119,6 +119,24 @@ pub struct GlobalNtAligner<C: AlignmentConfig<B>, B: SimdBackend = WideBackend> 
     _phantom: std::marker::PhantomData<B>,
 }
 
+impl<C: AlignmentConfig<B> + Clone, B: SimdBackend> Clone for GlobalNtAligner<C, B> {
+    fn clone(&self) -> Self {
+        let ncols = self.reference.len() + 1;
+        GlobalNtAligner {
+            config: self.config.clone(),
+            reference: self.reference.clone(),
+            top_row_scores: self.top_row_scores.clone(),
+            top_row_ops: self.top_row_ops.clone(),
+            scores: [
+                vec![B::SimdScore::default(); ncols],
+                vec![B::SimdScore::default(); ncols],
+            ],
+            ops: Vec::new(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<C: AlignmentConfig<B>, B: SimdBackend> GlobalNtAligner<C, B> {
     /// Creates a new `GlobalNtAligner` with the given configuration, backend, and reference sequence.
     ///

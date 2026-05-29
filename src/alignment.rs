@@ -28,7 +28,7 @@ impl Idx {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Anchor {
     pub idx: Idx,
     pub op: Op,
@@ -44,7 +44,7 @@ impl Anchor {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Alignment {
     pub score: Score,
     pub anchors: Vec<Anchor>,

@@ -234,6 +234,52 @@ impl<C: AlignmentConfig<B>, B: SimdBackend> Aligner<C, B> for GlobalNtAligner<C,
         }
         Ok(all_results)
     }
+
+    /// Aligns a stream of subject sequences against the aligner's fixed reference sequence.
+    ///
+    /// This method provides a memory-efficient interface for processing large numbers of sequences
+    /// by yielding results as an iterator. It internally groups incoming sequences into "macro-batches"
+    /// (defaulting to 1024) and processes them using `align_batch`.
+    ///
+    /// # Benefits:
+    /// 1. **Memory Efficiency:** Only a small number of sequences are held in memory at any given time,
+    ///    preventing OOM errors on massive datasets.
+    /// 2. **Cache Locality:** By using `align_batch` internally, it maintains high SIMD throughput and
+    ///    reuses internal buffers while they are hot in the L1/L2 caches.
+    /// 3. **Flexibility:** Accepts any iterator yielding types that implement `AsRef<[u8]>` (e.g., `Vec<u8>`, `String`, `&[u8]`).
+    ///
+    /// # Arguments:
+    /// * `subjects` - An iterator yielding sequences to be aligned.
+    ///
+    /// # Returns:
+    /// An iterator yielding `Result<Alignment, AlignmentError>` for each sequence in the input stream.
+    fn align_stream<'a, I, T>(&'a mut self, subjects: I) -> impl Iterator<Item = Result<Alignment, AlignmentError>> + 'a
+        where I: IntoIterator<Item = T> + 'a, T: AsRef<[u8]> + 'a {
+        let mut iterator = subjects.into_iter();
+        std::iter::from_fn(move || {
+            let mut batch = Vec::with_capacity(1024);
+            for _ in 0..1024 {
+                if let Some(s) = iterator.next() {
+                    batch.push(s);
+                } else {
+                    break;
+                }
+            }
+
+            if batch.is_empty() {
+                return None;
+            }
+
+            // Convert the batch of owned or borrowed sequences into a slice of references for align_batch.
+            let slices: Vec<&[u8]> = batch.iter().map(|s| s.as_ref()).collect();
+            match self.align_batch(&slices) {
+                // Wrap each successful alignment in Ok and yield as a batch.
+                Ok(results) => Some(results.into_iter().map(Ok).collect::<Vec<_>>()),
+                // If the entire batch fails (e.g., sequence too long), propagate the error to every item.
+                Err(e) => Some(vec![Err(e); batch.len()]),
+            }
+        }).flatten()
+    }
 }
 
 impl<C: AlignmentConfig<B>, B: SimdBackend> GlobalNtAligner<C, B> {
@@ -630,5 +676,32 @@ mod tests {
         // handle_empty_subjects (after loop) reads Row 2, Col 1 for Sub 2 -> -1
         // Correct score for Sub 2 should be Row 0, Col 1 -> -2
         assert_eq!(scores, Vec::from([1, -2, -1]));
+    }
+
+    #[test]
+    fn test_align_stream() {
+        let mut al = aligner(b"AGCT");
+        let subjects = vec!["AGCT", "AGAT", ""];
+        let results: Vec<_> = al.align_stream(subjects).map(|r| r.unwrap().score).collect();
+        assert_eq!(results, vec![4, 2, -4]);
+    }
+
+    #[test]
+    fn test_align_stream_error() {
+        let mut al = aligner(b"A");
+        // Create a batch where one sequence is too long.
+        // Note: our batch size is 1024, but align_batch will fail early if ANY sequence is too long.
+        let long_seq = "A".repeat(40000);
+        let subjects = vec!["A", &long_seq, "A"];
+        
+        let results: Vec<_> = al.align_stream(subjects).collect();
+        assert_eq!(results.len(), 3);
+        
+        // Because they were in the same batch, and the batch failed, all results are Err.
+        assert!(results[0].is_err());
+        assert!(results[1].is_err());
+        assert!(results[2].is_err());
+        
+        assert_eq!(results[1].clone().unwrap_err(), AlignmentError::SequenceTooLong);
     }
 }

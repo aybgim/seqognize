@@ -1,7 +1,6 @@
 use seqognize::config::Score;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::BufReader;
 
 #[derive(Serialize, Deserialize)]
 pub struct TestCase {
@@ -12,20 +11,23 @@ pub struct TestCase {
     pub aligned_sequences: (String, String, String),
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct TestSuite {
-    pub reference: String,
-    pub test_cases: Vec<TestCase>,
-}
+pub fn iterate_tests() -> (String, Box<dyn Iterator<Item = TestCase>>) {
+    let path = format!("{}/synth.jsonl", env!("CARGO_MANIFEST_DIR"));
+    let file = File::open(path).expect("Failed to open synth.jsonl");
+    let mut lines = std::io::BufRead::lines(std::io::BufReader::new(file));
 
+    // Parse header
+    let header_line = lines.next().expect("File is empty").expect("Failed to read header");
+    let header: serde_json::Value = serde_json::from_str(&header_line).expect("Failed to parse header");
+    let reference = header["reference"].as_str().expect("Missing reference in header").to_string();
 
-pub fn read_tests() -> TestSuite {
-    let path = format!("{}/synth.json", env!("CARGO_MANIFEST_DIR"));
-    let file = File::open(path).expect("Failed to open synth.json");
-    let reader = BufReader::new(file);
+    // Return reference and an iterator for test cases
+    let it = lines.map(|l| {
+        let line = l.expect("Failed to read line");
+        serde_json::from_str::<TestCase>(&line).expect("Failed to parse test case")
+    });
 
-    let test_suite: TestSuite = serde_json::from_reader(reader).expect("Failed to parse synth.json");
-    test_suite
+    (reference, Box::new(it))
 }
 
 #[cfg(test)]
@@ -33,53 +35,49 @@ mod tests {
     use seqognize::aligner::Aligner;
     use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
     use seqognize_parallel::ParallelAligner;
-    use crate::tests::read_tests;
+    use seqognize::config::AlignmentConfig;
+    use seqognize::simd_backend::SimdBackend;
+    use crate::tests::{iterate_tests, TestCase};
 
-    #[test]
-    fn test_synth() {
-        let test_suite = read_tests();
-        let reference = test_suite.reference.as_bytes();
+    fn test_aligner<C, B, A>(mut aligner: A, test_cases: Box<dyn Iterator<Item = TestCase>>)
+    where
+        B: SimdBackend,
+        C: AlignmentConfig<B>,
+        A: Aligner<C, B>,
+    {
+        let test_cases: Vec<_> = test_cases.collect();
+        let seqs: Vec<_> = test_cases.iter().map(|t| t.sequence.as_bytes()).collect();
 
-        let mut aligner = GlobalNtAligner::<_>::new(
-            NtAlignmentConfig::new(1, -1, -1, -1),
-            reference.to_vec()
-        ).expect("Failed to create aligner");
-
-        let mutant_sequences: Vec<&[u8]> = test_suite.test_cases.iter()
-            .map(|t| t.sequence.as_bytes())
-            .collect();
-
-        let results = aligner.align_batch(&mutant_sequences).expect("Batch alignment failed");
-
-        for (i, alignment) in results.into_iter().enumerate() {
-            let test = &test_suite.test_cases[i];
+        for (test, result) in test_cases.iter().zip(aligner.align_stream(seqs)) {
+            let alignment = result.expect("Alignment failed");
             assert_eq!(test.score, alignment.score);
             assert_eq!(test.aligned_sequences, alignment.aligned_sequences());
         }
     }
 
     #[test]
+    fn test_synth() {
+        let (reference, test_cases) = iterate_tests();
+
+        let aligner = GlobalNtAligner::<_>::new(
+            NtAlignmentConfig::new(1, -1, -1, -1),
+            reference.as_bytes().to_vec()
+        ).expect("Failed to create aligner");
+
+        test_aligner(aligner, test_cases);
+    }
+
+    #[test]
     fn test_parallel_synth() {
-        let test_suite = read_tests();
-        let reference = test_suite.reference.as_bytes();
+        let (reference, test_cases) = iterate_tests();
 
         let base_aligner = GlobalNtAligner::<_>::new(
             NtAlignmentConfig::new(1, -1, -1, -1),
-            reference.to_vec()
+            reference.as_bytes().to_vec()
         ).expect("Failed to create aligner");
         
-        let mut aligner = ParallelAligner::new(base_aligner, 10);
+        let aligner = ParallelAligner::new(base_aligner, 128);
 
-        let mutant_sequences: Vec<&[u8]> = test_suite.test_cases.iter()
-            .map(|t| t.sequence.as_bytes())
-            .collect();
-
-        let results = aligner.align_batch(&mutant_sequences).expect("Batch alignment failed");
-
-        for (i, alignment) in results.into_iter().enumerate() {
-            let test = &test_suite.test_cases[i];
-            assert_eq!(test.score, alignment.score);
-            assert_eq!(test.aligned_sequences, alignment.aligned_sequences());
-        }
+        test_aligner(aligner, test_cases);
     }
 }

@@ -6,67 +6,82 @@ use seqognize::aligner::Aligner;
 use seqognize::nt_aligner::{GlobalNtAligner, NtAlignmentConfig};
 use seqognize::simd_backend::{WideBackend};
 use seqognize_parallel::ParallelAligner;
-use seqognize_benches::tests::read_tests;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
-const MULTIPLIER: usize = 50;
+fn get_fasta_path() -> String {
+    format!("{}/synth.fasta", env!("CARGO_MANIFEST_DIR"))
+}
 
-/// Benchmarks the global nucleotide alignment algorithm using a large batch of synthetic data.
-fn nt_alignment_benchmark(c: &mut Criterion) {
-    let test_suite = read_tests();
-    let reference = test_suite.reference.as_bytes();
-    let mutants_base: Vec<&[u8]> = test_suite.test_cases.iter()
-        .map(|test| test.sequence.as_bytes())
-        .collect();
+fn read_reference() -> String {
+    let file = File::open(get_fasta_path()).expect("Failed to open synth.fasta");
+    let mut lines = BufReader::new(file).lines();
+    lines.next(); // Skip >reference
+    lines.next().expect("Missing reference sequence").expect("Failed to read reference")
+}
 
-    // Multiply the workload to 5000 sequences
-    let mut mutants = Vec::with_capacity(mutants_base.len() * MULTIPLIER);
-    for _ in 0..MULTIPLIER {
-        mutants.extend_from_slice(&mutants_base);
+struct FastaSubjectIterator<R: BufRead> {
+    lines: std::io::Lines<R>,
+}
+
+impl<R: BufRead> Iterator for FastaSubjectIterator<R> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let _ = self.lines.next()?; // Skip >header
+        self.lines.next().map(|l| l.expect("Failed to read sequence"))
     }
+}
 
+fn iterate_subjects() -> FastaSubjectIterator<BufReader<File>> {
+    let file = File::open(get_fasta_path()).expect("Failed to open synth.fasta");
+    let mut lines = BufReader::new(file).lines();
+    lines.next(); // skip >reference
+    lines.next(); // skip reference sequence
+    FastaSubjectIterator { lines }
+}
+
+/// Benchmarks the global nucleotide alignment algorithm using streaming FASTA data.
+fn nt_alignment_benchmark(c: &mut Criterion) {
+    let reference = read_reference();
+    
     let mut aligner = GlobalNtAligner::<_, WideBackend>::new(
         NtAlignmentConfig::new(1, -1, -1, -1),
-        reference.to_vec()
+        reference.as_bytes().to_vec()
     ).expect("Failed to create aligner");
 
-    let mut group = c.benchmark_group("Alignment");
+    let mut group = c.benchmark_group("Alignment-Streaming-FASTA");
     group.sample_size(10);
-    group.bench_function("NT alignment batch (5000 sequences)", |b| {
+    group.bench_function("NT alignment stream (5000 sequences)", |b| {
         b.iter(|| {
-            let _ = aligner.align_batch(&mutants);
+            let subjects = iterate_subjects();
+            for result in aligner.align_stream(subjects) {
+                let _ = criterion::black_box(result);
+            }
         })
     });
     group.finish();
 }
 
-/// Benchmarks the parallel nucleotide alignment algorithm using the same large workload.
+/// Benchmarks the parallel nucleotide alignment algorithm using streaming FASTA data.
 fn parallel_nt_alignment_benchmark(c: &mut Criterion) {
-    let test_suite = read_tests();
-    let reference = test_suite.reference.as_bytes();
-    let mutants_base: Vec<&[u8]> = test_suite.test_cases.iter()
-        .map(|test| test.sequence.as_bytes())
-        .collect();
-
-    // Multiply the workload to 5000 sequences
-    let mut mutants = Vec::with_capacity(mutants_base.len() * MULTIPLIER);
-    for _ in 0..MULTIPLIER {
-        mutants.extend_from_slice(&mutants_base);
-    }
+    let reference = read_reference();
 
     let base_aligner = GlobalNtAligner::<_, WideBackend>::new(
         NtAlignmentConfig::new(1, -1, -1, -1),
-        reference.to_vec()
+        reference.as_bytes().to_vec()
     ).expect("Failed to create aligner");
     
-    // Use a multiple of 8 (e.g., 40 * 8 = 320)
-    // to ensure efficiency within each parallel task across common SIMD widths.
     let mut aligner = ParallelAligner::new(base_aligner, 320);
 
-    let mut group = c.benchmark_group("Alignment-Parallel");
+    let mut group = c.benchmark_group("Alignment-Parallel-Streaming-FASTA");
     group.sample_size(10);
-    group.bench_function("Parallel NT alignment batch (5000 sequences)", |b| {
+    group.bench_function("Parallel NT alignment stream (5000 sequences)", |b| {
         b.iter(|| {
-            let _ = aligner.align_batch(&mutants);
+            let subjects = iterate_subjects();
+            for result in aligner.align_stream(subjects) {
+                let _ = criterion::black_box(result);
+            }
         })
     });
     group.finish();

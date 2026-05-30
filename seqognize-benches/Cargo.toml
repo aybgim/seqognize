@@ -17,7 +17,3 @@ criterion = "0.5.1"
 [[bench]]
 name = "nt_alignment"
 harness = false
-
-[[bin]]
-name = "synth"
-path = "src/main.rs"
